@@ -891,12 +891,14 @@ def rel_comissao():
         WHERE ci.tipo='servico' AND ci.coberto_plano=false AND c.fechada_em::date BETWEEN %s AND %s
         GROUP BY ci.profissional_id, pr.nome, pr.comissao_pct
     """, (de, ate))
+    # Produção = VISITAS de assinante (cada comanda com >=1 serviço coberto = 1 atendimento)
     atend_rows = q_all("""
-        SELECT ci.profissional_id, pr.nome AS prof_nome, COUNT(*) AS atend
-        FROM comanda_itens ci JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
-        LEFT JOIN profissionais pr ON pr.id=ci.profissional_id
-        WHERE ci.tipo='servico' AND ci.coberto_plano=true AND c.fechada_em::date BETWEEN %s AND %s
-        GROUP BY ci.profissional_id, pr.nome
+        SELECT c.profissional_id, pr.nome AS prof_nome, COUNT(DISTINCT c.id) AS atend
+        FROM comandas c
+        LEFT JOIN profissionais pr ON pr.id=c.profissional_id
+        WHERE c.status='fechada' AND c.fechada_em::date BETWEEN %s AND %s
+          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano=true)
+        GROUP BY c.profissional_id, pr.nome
     """, (de, ate))
 
     total_atend = sum(r['atend'] for r in atend_rows) or 0
@@ -947,13 +949,14 @@ def rel_minha_comissao():
     plan_revenue = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
         WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, hoje)) or 0
     pool = plan_revenue * pool_pct / 100.0
-    meu_atend = scalar("""SELECT COUNT(*) FROM comanda_itens ci
-        JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
-        WHERE ci.tipo='servico' AND ci.coberto_plano=true AND ci.profissional_id=%s
-          AND c.fechada_em::date BETWEEN %s AND %s""", (pid, de, hoje)) or 0
-    total_atend = scalar("""SELECT COUNT(*) FROM comanda_itens ci
-        JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
-        WHERE ci.tipo='servico' AND ci.coberto_plano=true AND c.fechada_em::date BETWEEN %s AND %s""",
+    # Produção por VISITA (comanda com >=1 serviço coberto)
+    meu_atend = scalar("""SELECT COUNT(DISTINCT c.id) FROM comandas c
+        WHERE c.status='fechada' AND c.profissional_id=%s AND c.fechada_em::date BETWEEN %s AND %s
+          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano=true)""",
+        (pid, de, hoje)) or 0
+    total_atend = scalar("""SELECT COUNT(DISTINCT c.id) FROM comandas c
+        WHERE c.status='fechada' AND c.fechada_em::date BETWEEN %s AND %s
+          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano=true)""",
         (de, hoje)) or 0
     pool_share = pool * (meu_atend / total_atend) if total_atend else 0
 

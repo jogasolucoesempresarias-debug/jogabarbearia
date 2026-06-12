@@ -21,7 +21,7 @@ def db():
         user=os.getenv('DB_USER'), password=os.getenv('DB_PASSWORD'))
 
 c = db(); cur = c.cursor()
-cur.execute("UPDATE usuarios SET must_change_password=false WHERE email='caixa@barbearia.local'")
+cur.execute("UPDATE usuarios SET must_change_password=false WHERE email='regiane@barbearia.local'")
 # pega 2 barbeiros
 cur.execute("SELECT id, nome FROM profissionais ORDER BY id LIMIT 2")
 (A, nomeA), (B, nomeB) = cur.fetchall()
@@ -35,26 +35,25 @@ cur.execute("DELETE FROM movimentos WHERE descricao='[SP] arrecadacao'")
 cur.execute("""INSERT INTO movimentos (tipo, origem, descricao, valor, data, status)
                VALUES ('receita','assinatura','[SP] arrecadacao',1000,%s,'pago')""", (hoje,))
 
-# Comanda do barbeiro A: 3 serviços cobertos + 1 avulso (Barba 29)
-cur.execute("INSERT INTO comandas (profissional_id, status, valor_total, fechada_em) VALUES (%s,'fechada',999999,NOW()) RETURNING id", (A,))
-comA = cur.fetchone()[0]
-for _ in range(3):
+def nova_comanda(prof):
+    cur.execute("INSERT INTO comandas (profissional_id, status, valor_total, fechada_em) VALUES (%s,'fechada',999999,NOW()) RETURNING id", (prof,))
+    return cur.fetchone()[0]
+def coberto(com, prof):
     cur.execute("""INSERT INTO comanda_itens (comanda_id, tipo, descricao, profissional_id, preco_unit, qtd, subtotal, preco_tabela, coberto_plano)
-                   VALUES (%s,'servico','[SP] Cabelo coberto',%s,0,1,0,36,true)""", (comA, A))
-cur.execute("""INSERT INTO comanda_itens (comanda_id, tipo, descricao, profissional_id, preco_unit, qtd, subtotal, coberto_plano)
-               VALUES (%s,'servico','[SP] Barba avulso',%s,29,1,29,false)""", (comA, A))
+                   VALUES (%s,'servico','[SP] coberto',%s,0,1,0,36,true)""", (com, prof))
+def avulso(com, prof, valor):
+    cur.execute("""INSERT INTO comanda_itens (comanda_id, tipo, descricao, profissional_id, preco_unit, qtd, subtotal, coberto_plano)
+                   VALUES (%s,'servico','[SP] avulso',%s,%s,1,%s,false)""", (com, prof, valor, valor))
 
-# Comanda do barbeiro B: 1 serviço coberto + 1 avulso (Cabelo 36)
-cur.execute("INSERT INTO comandas (profissional_id, status, valor_total, fechada_em) VALUES (%s,'fechada',999999,NOW()) RETURNING id", (B,))
-comB = cur.fetchone()[0]
-cur.execute("""INSERT INTO comanda_itens (comanda_id, tipo, descricao, profissional_id, preco_unit, qtd, subtotal, preco_tabela, coberto_plano)
-               VALUES (%s,'servico','[SP] Cabelo coberto',%s,0,1,0,36,true)""", (comB, B))
-cur.execute("""INSERT INTO comanda_itens (comanda_id, tipo, descricao, profissional_id, preco_unit, qtd, subtotal, coberto_plano)
-               VALUES (%s,'servico','[SP] Cabelo avulso',%s,36,1,36,false)""", (comB, B))
+# Barbeiro A: 2 VISITAS (visita1 com 2 serviços cobertos -> conta 1!) + 1 avulso (Barba 29)
+v1 = nova_comanda(A); coberto(v1, A); coberto(v1, A); avulso(v1, A, 29)  # visita 1 (2 serviços)
+v2 = nova_comanda(A); coberto(v2, A)                                      # visita 2
+# Barbeiro B: 1 VISITA (1 coberto) + 1 avulso (Cabelo 36)
+v3 = nova_comanda(B); coberto(v3, B); avulso(v3, B, 36)
 c.commit(); cur.close(); c.close()
 
 print("== Login ==")
-req = urllib.request.Request(BASE + '/api/login', data=json.dumps({'email':'caixa@barbearia.local','senha':'joga123'}).encode(), method='POST')
+req = urllib.request.Request(BASE + '/api/login', data=json.dumps({'email':'regiane@barbearia.local','senha':'joga123'}).encode(), method='POST')
 req.add_header('Content-Type','application/json'); op.open(req)
 planos = call('GET', '/api/planos')['rows']
 print("  planos:", [(p['nome'], p['valor_mensal'], [s['nome'] for s in p['servicos']]) for p in planos])
@@ -62,11 +61,11 @@ print("  planos:", [(p['nome'], p['valor_mensal'], [s['nome'] for s in p['servic
 print("== Relatório de comissão (hoje) ==")
 j = call('GET', f'/api/relatorios/comissao?de={hoje.isoformat()}&ate={hoje.isoformat()}')
 print(f"  arrecadacao={j['plan_revenue']} bolo={j['pool']} (esperado 1000 / 450)")
-print(f"  total_atend={j['total_atend']} (esperado 4)")
+print(f"  total_atend={j['total_atend']} VISITAS (esperado 3 = A:2 visitas + B:1; visita c/ 2 servicos conta 1!)")
 for r in j['rows']:
-    print(f"   - {r['profissional']:8} avulso={r['avulso']:>7} bolo={r['pool_share']:>7} ({r['participacao_pct']}% · {r['atend']} atend) total={r['total']}")
+    print(f"   - {r['profissional']:20} avulso={r['avulso']:>7} bolo={r['pool_share']:>7} ({r['participacao_pct']}% · {r['atend']} visitas) total={r['total']}")
 print(f"  TOTAL geral={j['total']}")
-print("  Esperado:  A(3 atend)=avulso 13.05 + bolo 337.50 = 350.55 | B(1)=16.20 + 112.50 = 128.70")
+print("  Esperado:  A(2 visitas=66.7%)=avulso 13.05 + bolo 300.00 = 313.05 | B(1=33.3%)=16.20 + 150.00 = 166.20")
 
 print("== Limpeza ==")
 c = db(); cur = c.cursor()

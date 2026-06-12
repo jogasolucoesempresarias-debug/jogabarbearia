@@ -25,26 +25,32 @@ def vazia(tabela):
     return cur.fetchone()[0] == 0
 
 
-# ── Profissionais (3 barbeiros, 45%) ──────────────────────────────────
+# ── Profissionais ─────────────────────────────────────────────────────
+# Regiane está sozinha (dona E barbeira). João Victor é o barbeiro de teste/treino.
 if vazia('profissionais'):
-    barbeiros = [('Marcos', '#38bdf8'), ('Pedro', '#34d399'), ('Lucas', '#fb923c')]
+    barbeiros = [('Regiane Vieira Zava', '#38bdf8'), ('João Victor', '#34d399')]
     for nome, cor in barbeiros:
         cur.execute("INSERT INTO profissionais (nome, comissao_pct, cor_agenda) VALUES (%s,45,%s)", (nome, cor))
-    print(f"[OK] {len(barbeiros)} barbeiros criados.")
+    print(f"[OK] {len(barbeiros)} barbeiros criados (Regiane, João Victor).")
 
-# ── Usuários (dono, caixa, e 1 login por barbeiro) ────────────────────
+# ── Usuários ──────────────────────────────────────────────────────────
 if vazia('usuarios'):
-    cur.execute("INSERT INTO usuarios (nome, email, password_hash, role) VALUES (%s,%s,%s,'dono')",
-                ('Dona', 'dono@barbearia.local', generate_password_hash(SENHA)))
-    cur.execute("INSERT INTO usuarios (nome, email, password_hash, role) VALUES (%s,%s,%s,'caixa')",
-                ('Caixa', 'caixa@barbearia.local', generate_password_hash(SENHA)))
-    cur.execute("SELECT id, nome FROM profissionais ORDER BY id")
-    for pid, nome in cur.fetchall():
-        email = f"{nome.lower()}@barbearia.local"
-        cur.execute("""INSERT INTO usuarios (nome, email, password_hash, role, profissional_id)
-                       VALUES (%s,%s,%s,'barbeiro',%s)""",
-                    (nome, email, generate_password_hash(SENHA), pid))
-    print("[OK] Usuarios: dono@ / caixa@ / <barbeiro>@barbearia.local  (senha:", SENHA, ")")
+    def prof_id(nome):
+        cur.execute("SELECT id FROM profissionais WHERE nome=%s", (nome,))
+        r = cur.fetchone()
+        return r[0] if r else None
+
+    # Regiane: DONA (acesso total) e também BARBEIRA (vinculada ao perfil dela)
+    cur.execute("""INSERT INTO usuarios (nome, email, password_hash, role, profissional_id)
+                   VALUES (%s,%s,%s,'dono',%s)""",
+                ('Regiane Vieira Zava', 'regiane@barbearia.local', generate_password_hash(SENHA),
+                 prof_id('Regiane Vieira Zava')))
+    # João Victor: barbeiro
+    cur.execute("""INSERT INTO usuarios (nome, email, password_hash, role, profissional_id)
+                   VALUES (%s,%s,%s,'barbeiro',%s)""",
+                ('João Victor', 'joaovictor@barbearia.local', generate_password_hash(SENHA),
+                 prof_id('João Victor')))
+    print("[OK] Usuarios: regiane@barbearia.local (dona+barbeira) / joaovictor@barbearia.local (barbeiro) — senha:", SENHA)
 
 # ── Serviços ──────────────────────────────────────────────────────────
 if vazia('servicos'):
