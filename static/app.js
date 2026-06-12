@@ -22,6 +22,18 @@ function hhmm(t) { return t ? String(t).slice(0, 5) : ''; }
 function hoje() { return new Date().toISOString().slice(0, 10); }
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+// Máscara de telefone BR: só dígitos → (DD) XXXXX-XXXX (celular) ou (DD) XXXX-XXXX (fixo)
+function maskTelefone(v) {
+  const d = String(v || '').replace(/\D/g, '').slice(0, 11);
+  const len = d.length;
+  if (len === 0) return '';
+  if (len < 3) return '(' + d;
+  const ddd = d.slice(0, 2), resto = d.slice(2);
+  if (len <= 6) return `(${ddd}) ${resto}`;
+  if (len <= 10) return `(${ddd}) ${resto.slice(0, 4)}-${resto.slice(4)}`;
+  return `(${ddd}) ${resto.slice(0, 5)}-${resto.slice(5)}`;
+}
+
 function toast(msg, tipo = 'ok') {
   let t = document.getElementById('toast');
   if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }

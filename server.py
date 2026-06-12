@@ -397,7 +397,7 @@ def cli_detail(cid):
 @login_required
 def cli_create():
     d = request.get_json() or {}
-    nome = (d.get('nome') or '').strip()
+    nome = (d.get('nome') or '').strip().upper()
     if not nome:
         return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
     tipo = d.get('tipo') if d.get('tipo') in ('fixo', 'universal') else 'universal'
@@ -412,9 +412,12 @@ def cli_create():
 @login_required
 def cli_update(cid):
     d = request.get_json() or {}
+    nome = d.get('nome')
+    if nome:
+        nome = nome.strip().upper()
     execute("""UPDATE clientes SET nome=COALESCE(%s,nome), telefone=%s, tipo=COALESCE(%s,tipo),
                profissional_fixo_id=%s, observacoes=%s WHERE id=%s""",
-            (d.get('nome'), d.get('telefone'), d.get('tipo'), d.get('profissional_fixo_id') or None,
+            (nome, d.get('telefone'), d.get('tipo'), d.get('profissional_fixo_id') or None,
              d.get('observacoes'), cid))
     return jsonify({'ok': True})
 

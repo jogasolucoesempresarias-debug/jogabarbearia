@@ -21,8 +21,8 @@
   <div class="modal">
     <h2 id="m-titulo">Novo cliente</h2>
     <input type="hidden" id="c-id">
-    <div class="field"><label>Nome *</label><input type="text" id="c-nome"></div>
-    <div class="field"><label>Telefone</label><input type="tel" id="c-tel" inputmode="tel"></div>
+    <div class="field"><label>Nome *</label><input type="text" id="c-nome" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"></div>
+    <div class="field"><label>Telefone</label><input type="tel" id="c-tel" inputmode="numeric" placeholder="(34) 99943-4613" oninput="this.value=maskTelefone(this.value)"></div>
     <div class="field"><label>Tipo</label><select id="c-tipo" onchange="toggleFixo()"><option value="universal">Universal (qualquer barbeiro)</option><option value="fixo">Fixo (barbeiro preferido)</option></select></div>
     <div class="field" id="c-fixo-wrap" style="display:none"><label>Barbeiro preferido</label><select id="c-fixo"></select></div>
     <div class="field"><label>Observações</label><textarea id="c-obs" rows="2"></textarea></div>

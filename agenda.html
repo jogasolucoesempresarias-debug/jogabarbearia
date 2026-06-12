@@ -87,8 +87,8 @@
 <div class="modal-bg" id="mNovoCli">
   <div class="modal">
     <h2>Novo cliente</h2>
-    <div class="field"><label>Nome *</label><input id="nc-nome"></div>
-    <div class="field"><label>Telefone</label><input id="nc-tel" type="tel" inputmode="tel"></div>
+    <div class="field"><label>Nome *</label><input id="nc-nome" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"></div>
+    <div class="field"><label>Telefone</label><input id="nc-tel" type="tel" inputmode="numeric" placeholder="(34) 99943-4613" oninput="this.value=maskTelefone(this.value)"></div>
     <div class="field"><label>Tipo</label><select id="nc-tipo"><option value="universal">Universal</option><option value="fixo">Fixo</option></select></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal('mNovoCli')">Cancelar</button>
