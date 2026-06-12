@@ -38,6 +38,7 @@
     <div class="field"><label>Tipo</label><select id="t-tipo"><option value="despesa">Despesa</option><option value="receita">Receita</option></select></div>
     <div class="field"><label>Descrição</label><input type="text" id="t-desc"></div>
     <div class="field"><label>Valor (R$)</label><input type="number" id="t-valor" inputmode="decimal" step="0.01"></div>
+    <div class="field"><label>Categoria (despesa)</label><select id="t-cat"></select></div>
     <div class="field"><label>Forma</label><select id="t-forma"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
     <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('m')">Cancelar</button><button class="btn btn-primary" onclick="lancar()">Lançar</button></div>
   </div>
@@ -72,12 +73,14 @@ async function baixar(id) {
 }
 async function lancar() {
   try {
-    await api('/api/movimentos', { method:'POST', body:{ tipo:document.getElementById('t-tipo').value, descricao:document.getElementById('t-desc').value, valor:document.getElementById('t-valor').value, forma_pagamento:document.getElementById('t-forma').value }});
+    await api('/api/movimentos', { method:'POST', body:{ tipo:document.getElementById('t-tipo').value, descricao:document.getElementById('t-desc').value, valor:document.getElementById('t-valor').value, categoria:document.getElementById('t-cat').value, forma_pagamento:document.getElementById('t-forma').value }});
     toast('Lançado!', 'ok'); closeModal('m'); ['t-desc','t-valor'].forEach(i=>document.getElementById(i).value=''); carregar();
   } catch (e) { toast(e.message, 'err'); }
 }
 document.getElementById('f-data').value = hoje();
-renderShell('/caixa'); carregar();
+renderShell('/caixa');
+api('/api/config').then(j=>{ document.getElementById('t-cat').innerHTML = (j.config.categorias_despesa||[]).map(c=>`<option>${c}</option>`).join(''); }).catch(()=>{});
+carregar();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 </body>

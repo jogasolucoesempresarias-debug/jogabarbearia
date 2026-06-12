@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Despesas</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Despesas</h1><div class="sub">Custos e impostos</div></div></div></div>
+
+  <div class="tabs">
+    <button class="active" data-t="lista" onclick="tab('lista',this)">Lançamentos</button>
+    <button data-t="fixas" onclick="tab('fixas',this)">Fixas (recorrentes)</button>
+  </div>
+
+  <!-- LISTA -->
+  <section id="sec-lista">
+    <div class="filters">
+      <div class="field"><label>Mês</label><input type="month" id="f-mes" onchange="carregar()"></div>
+      <div class="field"><label>Categoria</label><select id="f-cat" onchange="carregar()"><option value="">Todas</option></select></div>
+    </div>
+    <div class="card kpi"><div class="label">Total de despesas no mês</div><div class="value neg" id="total">—</div></div>
+    <div class="section-title">Por categoria</div>
+    <div class="list" id="resumo"></div>
+    <div class="section-title">Lançamentos</div>
+    <div class="list" id="lista"><div class="empty">Carregando…</div></div>
+  </section>
+
+  <!-- FIXAS -->
+  <section id="sec-fixas" style="display:none">
+    <div class="card">
+      <button class="btn btn-primary btn-block" onclick="gerarMes()">📅 Gerar despesas do mês</button>
+      <div class="hint" style="margin-top:8px">Cria os lançamentos das despesas fixas no mês selecionado (não duplica).</div>
+    </div>
+    <div class="section-title">Despesas fixas cadastradas</div>
+    <div class="list" id="lista-fixas"></div>
+  </section>
+</div>
+<button class="btn btn-primary btn-fab" id="fab" onclick="abrirNovo()">+</button>
+
+<!-- Modal lançar despesa -->
+<div class="modal-bg" id="mDesp">
+  <div class="modal">
+    <h2>Nova despesa</h2>
+    <div class="field"><label>Descrição *</label><input id="d-desc"></div>
+    <div class="row2" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="field"><label>Valor (R$) *</label><input id="d-valor" type="number" inputmode="decimal" step="0.01"></div>
+      <div class="field"><label>Data</label><input id="d-data" type="date"></div>
+    </div>
+    <div class="field"><label>Categoria</label><select id="d-cat"></select></div>
+    <div class="field"><label>Forma de pagamento</label><select id="d-forma"></select></div>
+    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('mDesp')">Cancelar</button><button class="btn btn-primary" onclick="salvar()">Lançar</button></div>
+  </div>
+</div>
+
+<!-- Modal despesa fixa -->
+<div class="modal-bg" id="mFixa">
+  <div class="modal">
+    <h2 id="fx-titulo">Nova despesa fixa</h2>
+    <input type="hidden" id="fx-id">
+    <div class="field"><label>Descrição *</label><input id="fx-desc" placeholder="Ex.: Aluguel, DAS/Imposto, Internet"></div>
+    <div class="row2" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="field"><label>Valor (R$) *</label><input id="fx-valor" type="number" inputmode="decimal" step="0.01"></div>
+      <div class="field"><label>Dia do mês</label><input id="fx-dia" type="number" min="1" max="28" value="5"></div>
+    </div>
+    <div class="field"><label>Categoria</label><select id="fx-cat"></select></div>
+    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('mFixa')">Cancelar</button><button class="btn btn-primary" onclick="salvarFixa()">Salvar</button></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+let CATS = [], FORMAS = [], ATUAL = 'lista';
+function mesAtual() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; }
+function rangeMes() { const v = document.getElementById('f-mes').value || mesAtual(); const [y,m]=v.split('-').map(Number); const ult=new Date(y,m,0).getDate(); return [`${v}-01`, `${v}-${String(ult).padStart(2,'0')}`, v]; }
+
+function tab(t, btn) {
+  ATUAL = t; document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active')); btn.classList.add('active');
+  document.getElementById('sec-lista').style.display = t==='lista'?'':'none';
+  document.getElementById('sec-fixas').style.display = t==='fixas'?'':'none';
+  document.getElementById('fab').onclick = t==='lista'?abrirNovo:abrirNovaFixa;
+  if (t==='fixas') carregarFixas();
+}
+
+async function carregar() {
+  const [de, ate] = rangeMes();
+  const cat = document.getElementById('f-cat').value;
+  try {
+    const res = await api(`/api/despesas/resumo?de=${de}&ate=${ate}`);
+    document.getElementById('total').textContent = money(res.total);
+    document.getElementById('resumo').innerHTML = res.por_categoria.length
+      ? res.por_categoria.map(c=>`<div class="row-item"><div class="ri-main">${escapeHtml(c.categoria)}</div><div class="ri-right">${money(c.total)} <span class="muted">(${c.qtd})</span></div></div>`).join('')
+      : '<div class="empty">Sem despesas no mês.</div>';
+
+    const p = new URLSearchParams({ tipo:'despesa', de, ate }); if (cat) p.set('categoria', cat);
+    const { rows } = await api('/api/movimentos?' + p.toString());
+    document.getElementById('lista').innerHTML = rows.length
+      ? rows.map(m=>`<div class="row-item"><div>
+          <div class="ri-main">${escapeHtml(m.descricao)} ${m.despesa_fixa_id?'<span class="badge plano">fixa</span>':''}</div>
+          <div class="ri-sub">${escapeHtml(m.categoria||'Sem categoria')} · ${fmtData(m.data)}</div></div>
+          <div style="display:flex;gap:10px;align-items:center"><div class="ri-right" style="color:var(--red)">−${money(m.valor)}</div>
+          <button class="btn btn-sm btn-danger" onclick="excluir(${m.id})">×</button></div></div>`).join('')
+      : '<div class="empty">Nenhuma despesa.</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function abrirNovo() {
+  ['d-desc','d-valor'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('d-data').value = hoje();
+  document.getElementById('d-cat').innerHTML = CATS.map(c=>`<option>${escapeHtml(c)}</option>`).join('');
+  document.getElementById('d-forma').innerHTML = FORMAS.map(f=>`<option>${escapeHtml(f)}</option>`).join('');
+  openModal('mDesp');
+}
+async function salvar() {
+  const desc = document.getElementById('d-desc').value.trim();
+  if (!desc) return toast('Informe a descrição.', 'err');
+  try {
+    await api('/api/movimentos', { method:'POST', body:{ tipo:'despesa', descricao:desc,
+      categoria:document.getElementById('d-cat').value, valor:document.getElementById('d-valor').value,
+      data:document.getElementById('d-data').value, forma_pagamento:document.getElementById('d-forma').value }});
+    toast('Despesa lançada!', 'ok'); closeModal('mDesp'); carregar();
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function excluir(id) {
+  if (!confirm('Excluir esta despesa?')) return;
+  try { await api('/api/movimentos/'+id, { method:'DELETE' }); toast('Excluído.', 'ok'); carregar(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+// ── Fixas ──
+async function carregarFixas() {
+  try {
+    const { rows } = await api('/api/despesas-fixas');
+    document.getElementById('lista-fixas').innerHTML = rows.length
+      ? rows.map(f=>`<div class="row-item" onclick='editarFixa(${JSON.stringify(f)})'><div>
+          <div class="ri-main">${escapeHtml(f.descricao)}</div>
+          <div class="ri-sub">${escapeHtml(f.categoria||'—')} · todo dia ${f.dia}</div></div>
+          <div style="display:flex;gap:10px;align-items:center"><div class="ri-right">${money(f.valor)}</div>
+          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();excluirFixa(${f.id})">×</button></div></div>`).join('')
+      : '<div class="empty">Nenhuma despesa fixa. Cadastre aluguel, impostos, internet…</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+function abrirNovaFixa() {
+  document.getElementById('fx-titulo').textContent = 'Nova despesa fixa';
+  ['fx-id','fx-desc','fx-valor'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('fx-dia').value = 5;
+  document.getElementById('fx-cat').innerHTML = CATS.map(c=>`<option>${escapeHtml(c)}</option>`).join('');
+  openModal('mFixa');
+}
+function editarFixa(f) {
+  document.getElementById('fx-titulo').textContent = 'Editar despesa fixa';
+  document.getElementById('fx-id').value = f.id;
+  document.getElementById('fx-desc').value = f.descricao;
+  document.getElementById('fx-valor').value = f.valor;
+  document.getElementById('fx-dia').value = f.dia;
+  document.getElementById('fx-cat').innerHTML = CATS.map(c=>`<option ${c===f.categoria?'selected':''}>${escapeHtml(c)}</option>`).join('');
+  openModal('mFixa');
+}
+async function salvarFixa() {
+  const id = document.getElementById('fx-id').value;
+  const body = { descricao:document.getElementById('fx-desc').value, categoria:document.getElementById('fx-cat').value,
+    valor:document.getElementById('fx-valor').value, dia:document.getElementById('fx-dia').value };
+  if (!body.descricao.trim()) return toast('Informe a descrição.', 'err');
+  try {
+    if (id) await api('/api/despesas-fixas/'+id, { method:'PUT', body });
+    else await api('/api/despesas-fixas', { method:'POST', body });
+    toast('Salvo!', 'ok'); closeModal('mFixa'); carregarFixas();
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function excluirFixa(id) {
+  if (!confirm('Remover esta despesa fixa? (lançamentos já gerados ficam)')) return;
+  try { await api('/api/despesas-fixas/'+id, { method:'DELETE' }); toast('Removida.', 'ok'); carregarFixas(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function gerarMes() {
+  const comp = (document.getElementById('f-mes').value || mesAtual());
+  try {
+    const r = await api('/api/despesas-fixas/gerar', { method:'POST', body:{ competencia: comp } });
+    toast(r.gerados>0?`${r.gerados} despesa(s) gerada(s) em ${r.competencia}.`:`Nada a gerar (já feito em ${r.competencia}).`, 'ok');
+    carregarFixas();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+(async () => {
+  await renderShell('/despesas');
+  const cfg = (await api('/api/config')).config;
+  CATS = cfg.categorias_despesa || []; FORMAS = cfg.formas_pagamento || ['Dinheiro','Pix','Cartão'];
+  document.getElementById('f-cat').innerHTML = '<option value="">Todas</option>' + CATS.map(c=>`<option>${escapeHtml(c)}</option>`).join('');
+  document.getElementById('f-mes').value = mesAtual();
+  carregar();
+})();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

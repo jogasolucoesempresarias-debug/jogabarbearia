@@ -214,6 +214,22 @@ cur.execute("""
 """)
 cur.execute("CREATE INDEX IF NOT EXISTS ix_mov_data ON movimentos(data);")
 cur.execute("CREATE INDEX IF NOT EXISTS ix_mov_status ON movimentos(status);")
+# Despesas: categoria + vínculo com despesa fixa recorrente (aditivo)
+cur.execute("ALTER TABLE movimentos ADD COLUMN IF NOT EXISTS categoria VARCHAR(40);")
+cur.execute("ALTER TABLE movimentos ADD COLUMN IF NOT EXISTS despesa_fixa_id INTEGER;")
+
+# ── Despesas fixas (recorrentes: aluguel, impostos, internet...) ──────
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS despesas_fixas (
+        id        SERIAL PRIMARY KEY,
+        descricao VARCHAR(160) NOT NULL,
+        categoria VARCHAR(40),
+        valor     NUMERIC(10,2) NOT NULL,
+        dia       INTEGER DEFAULT 5 CHECK (dia BETWEEN 1 AND 28),
+        ativo     BOOLEAN DEFAULT true,
+        criado_em TIMESTAMP DEFAULT NOW()
+    );
+""")
 
 # ── Configurações (linha única) + white-label ─────────────────────────
 cur.execute("""
@@ -232,6 +248,9 @@ cur.execute("""
     );
 """)
 cur.execute("INSERT INTO configuracoes (id) VALUES (1) ON CONFLICT (id) DO NOTHING;")
+# Categorias de despesa (configuráveis, incluindo Impostos)
+cur.execute("""ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS categorias_despesa JSONB
+    DEFAULT '["Impostos","Aluguel","Insumos/Produtos","Energia/Água","Salários","Marketing","Manutenção","Outras"]'::jsonb;""")
 
 conn.commit()
 cur.close()

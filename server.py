@@ -153,6 +153,7 @@ PAGINAS = {
     '/clientes':    'clientes.html',
     '/assinaturas': 'assinaturas.html',
     '/caixa':       'caixa.html',
+    '/despesas':    'despesas.html',
     '/relatorios':  'relatorios.html',
     '/config':      'config.html',
     '/barbeiro':    'barbeiro.html',
@@ -491,11 +492,13 @@ def config_update():
     execute("""UPDATE configuracoes SET
                  slot_min=COALESCE(%s,slot_min), comissao_padrao=COALESCE(%s,comissao_padrao),
                  formas_pagamento=COALESCE(%s,formas_pagamento), horarios=COALESCE(%s,horarios),
+                 categorias_despesa=COALESCE(%s,categorias_despesa),
                  marca_nome=COALESCE(%s,marca_nome), marca_cor=COALESCE(%s,marca_cor), marca_logo_url=%s
                WHERE id=1""",
             (d.get('slot_min'), d.get('comissao_padrao'),
              Json(d['formas_pagamento']) if d.get('formas_pagamento') is not None else None,
              Json(d['horarios']) if d.get('horarios') is not None else None,
+             Json(d['categorias_despesa']) if d.get('categorias_despesa') is not None else None,
              d.get('marca_nome'), d.get('marca_cor'), d.get('marca_logo_url')))
     return jsonify({'ok': True})
 
@@ -830,7 +833,13 @@ def assin_gerar_cobrancas():
 def mov_list():
     de = parse_date(request.args.get('de'), date.today())
     ate = parse_date(request.args.get('ate'), date.today())
-    rows = q_all("""SELECT * FROM movimentos WHERE data>=%s AND data<=%s ORDER BY id DESC LIMIT 500""", (de, ate))
+    where = ["data>=%s AND data<=%s"]
+    params = [de, ate]
+    if request.args.get('tipo') in ('receita', 'despesa'):
+        where.append("tipo=%s"); params.append(request.args.get('tipo'))
+    if request.args.get('categoria'):
+        where.append("categoria=%s"); params.append(request.args.get('categoria'))
+    rows = q_all(f"SELECT * FROM movimentos WHERE {' AND '.join(where)} ORDER BY data DESC, id DESC LIMIT 800", params)
     return jsonify({'ok': True, 'rows': rows})
 
 
@@ -840,10 +849,17 @@ def mov_create():
     d = request.get_json() or {}
     if d.get('tipo') not in ('receita', 'despesa') or not (d.get('descricao') or '').strip():
         return jsonify({'ok': False, 'error': 'Tipo e descrição obrigatórios'}), 400
-    execute("""INSERT INTO movimentos (tipo, origem, descricao, valor, forma_pagamento, data, status, criado_por)
-               VALUES (%s,'manual',%s,%s,%s,%s,'pago',%s)""",
-            (d['tipo'], d['descricao'].strip(), d.get('valor') or 0, d.get('forma_pagamento'),
+    execute("""INSERT INTO movimentos (tipo, origem, descricao, categoria, valor, forma_pagamento, data, status, criado_por)
+               VALUES (%s,'manual',%s,%s,%s,%s,%s,'pago',%s)""",
+            (d['tipo'], d['descricao'].strip(), d.get('categoria'), d.get('valor') or 0, d.get('forma_pagamento'),
              parse_date(d.get('data'), date.today()), session['user_id']))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/movimentos/<int:mid>', methods=['DELETE'])
+@login_required
+def mov_delete(mid):
+    execute("DELETE FROM movimentos WHERE id=%s", (mid,))
     return jsonify({'ok': True})
 
 
@@ -854,6 +870,85 @@ def mov_pagar(mid):
     execute("UPDATE movimentos SET status='pago', forma_pagamento=COALESCE(%s,forma_pagamento), data=CURRENT_DATE WHERE id=%s",
             (d.get('forma_pagamento'), mid))
     return jsonify({'ok': True})
+
+
+# ── Despesas fixas (recorrentes) + resumo ─────────────────────────────
+@app.route('/api/despesas-fixas', methods=['GET'])
+@login_required
+def df_list():
+    return jsonify({'ok': True, 'rows': q_all("SELECT * FROM despesas_fixas WHERE ativo ORDER BY descricao")})
+
+
+@app.route('/api/despesas-fixas', methods=['POST'])
+@login_required
+def df_create():
+    d = request.get_json() or {}
+    if not (d.get('descricao') or '').strip():
+        return jsonify({'ok': False, 'error': 'Descrição obrigatória'}), 400
+    dia = max(1, min(int(d.get('dia') or 5), 28))
+    row = execute("""INSERT INTO despesas_fixas (descricao, categoria, valor, dia)
+                     VALUES (%s,%s,%s,%s) RETURNING *""",
+                  (d['descricao'].strip(), d.get('categoria'), d.get('valor') or 0, dia), returning=True)
+    return jsonify({'ok': True, 'row': row})
+
+
+@app.route('/api/despesas-fixas/<int:fid>', methods=['PUT'])
+@login_required
+def df_update(fid):
+    d = request.get_json() or {}
+    execute("""UPDATE despesas_fixas SET descricao=COALESCE(%s,descricao), categoria=%s,
+               valor=COALESCE(%s,valor), dia=COALESCE(%s,dia) WHERE id=%s""",
+            (d.get('descricao'), d.get('categoria'), d.get('valor'), d.get('dia'), fid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/despesas-fixas/<int:fid>', methods=['DELETE'])
+@login_required
+def df_delete(fid):
+    execute("UPDATE despesas_fixas SET ativo=false WHERE id=%s", (fid,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/despesas-fixas/gerar', methods=['POST'])
+@login_required
+def df_gerar():
+    """Gera as despesas fixas do mês (já pagas). Idempotente: pula as já geradas no mês."""
+    d = request.get_json() or {}
+    comp = d.get('competencia')
+    hoje = date.today()
+    try:
+        ano, mes = (int(comp[:4]), int(comp[5:7])) if comp else (hoje.year, hoje.month)
+    except (ValueError, IndexError):
+        return jsonify({'ok': False, 'error': 'Competência inválida'}), 400
+    import calendar
+    ult = calendar.monthrange(ano, mes)[1]
+    fixas = q_all("SELECT * FROM despesas_fixas WHERE ativo")
+    gerados = 0
+    for f in fixas:
+        existe = scalar("""SELECT COUNT(*) FROM movimentos WHERE despesa_fixa_id=%s
+                           AND date_trunc('month', data) = date_trunc('month', %s::date)""",
+                        (f['id'], date(ano, mes, 1)))
+        if existe:
+            continue
+        dia = min(int(f['dia'] or 5), ult)
+        execute("""INSERT INTO movimentos (tipo, origem, descricao, categoria, valor, data, status, despesa_fixa_id, criado_por)
+                   VALUES ('despesa','manual',%s,%s,%s,%s,'pago',%s,%s)""",
+                (f['descricao'], f['categoria'], f['valor'], date(ano, mes, dia), f['id'], session['user_id']))
+        gerados += 1
+    return jsonify({'ok': True, 'gerados': gerados, 'competencia': f"{mes:02d}/{ano}"})
+
+
+@app.route('/api/despesas/resumo')
+@login_required
+def despesas_resumo():
+    de = parse_date(request.args.get('de'), date.today().replace(day=1))
+    ate = parse_date(request.args.get('ate'), date.today())
+    por_cat = q_all("""SELECT COALESCE(categoria,'Sem categoria') AS categoria, COALESCE(SUM(valor),0) AS total, COUNT(*) AS qtd
+                       FROM movimentos WHERE tipo='despesa' AND status='pago' AND data BETWEEN %s AND %s
+                       GROUP BY categoria ORDER BY total DESC""", (de, ate))
+    total = scalar("SELECT COALESCE(SUM(valor),0) FROM movimentos WHERE tipo='despesa' AND status='pago' AND data BETWEEN %s AND %s", (de, ate)) or 0
+    return jsonify({'ok': True, 'de': de.isoformat(), 'ate': ate.isoformat(),
+                    'total': round(total, 2), 'por_categoria': por_cat})
 
 
 @app.route('/api/caixa/fechamento')

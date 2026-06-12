@@ -53,6 +53,7 @@ async function render() {
       <div class="field"><label>Nome da barbearia (marca)</label><input id="g-nome" value="${escapeHtml(CFG.marca_nome||'')}"></div>
       <div class="field"><label>Cor da marca</label><input type="color" id="g-cor" value="${CFG.marca_cor||'#38bdf8'}" style="height:48px"></div>
       <div class="field"><label>Formas de pagamento (separadas por vírgula)</label><input id="g-formas" value="${(CFG.formas_pagamento||[]).join(', ')}"></div>
+      <div class="field"><label>Categorias de despesa (separadas por vírgula)</label><input id="g-catdesp" value="${(CFG.categorias_despesa||[]).join(', ')}"></div>
       <button class="btn btn-primary btn-block" onclick="salvarGeral()">Salvar geral</button>
     </div>
     <div class="section-title">Horário de funcionamento</div>
@@ -101,7 +102,7 @@ async function salvarPlano(){
 }
 
 async function salvarGeral(){
-  try { await api('/api/config',{method:'PUT',body:{ marca_nome:V('g-nome'), marca_cor:V('g-cor'), formas_pagamento:V('g-formas').split(',').map(s=>s.trim()).filter(Boolean) }}); toast('Salvo!','ok'); }
+  try { await api('/api/config',{method:'PUT',body:{ marca_nome:V('g-nome'), marca_cor:V('g-cor'), formas_pagamento:V('g-formas').split(',').map(s=>s.trim()).filter(Boolean), categorias_despesa:V('g-catdesp').split(',').map(s=>s.trim()).filter(Boolean) }}); toast('Salvo!','ok'); }
   catch(e){ toast(e.message,'err'); }
 }
 async function salvarHorarios(){
