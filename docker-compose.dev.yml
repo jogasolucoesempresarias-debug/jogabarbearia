@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: barbearia_postgres_dev
+    environment:
+      POSTGRES_DB: joga_barbearia
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 240316
+    ports:
+      - "5433:5432"
+    volumes:
+      - barbearia_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  barbearia_pgdata:

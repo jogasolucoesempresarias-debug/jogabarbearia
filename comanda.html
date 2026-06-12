@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Comanda</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1 id="titulo">Comandas</h1><div class="sub" id="sub">—</div></div></div></div>
+  <div id="conteudo"><div class="empty">Carregando…</div></div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const COMANDA_ID = params.get('id');
+let COM = null, ITENS = [], SERVICOS = [], PRODUTOS = [], PROFS = [], FORMAS = [], executorId = null;
+
+async function init() {
+  await renderShell('/comanda');
+  if (COMANDA_ID) await abrirComanda();
+  else await listarAbertas();
+}
+
+async function listarAbertas() {
+  document.getElementById('titulo').textContent = 'Comandas abertas';
+  try {
+    const { rows } = await api('/api/comandas/abertas');
+    document.getElementById('sub').textContent = rows.length + ' aberta(s)';
+    const cont = document.getElementById('conteudo');
+    if (!rows.length) { cont.innerHTML = '<div class="empty">Nenhuma comanda aberta.<br><span class="muted">Abra pela Agenda (atender / walk-in).</span></div>'; return; }
+    cont.innerHTML = '<div class="list">' + rows.map(c => `
+      <a class="row-item" href="/comanda?id=${c.id}">
+        <div><div class="ri-main">${escapeHtml(c.cliente_nome || 'Walk-in')}</div>
+          <div class="ri-sub">${escapeHtml(c.prof_nome || '')} · #${c.id}</div></div>
+        <div class="ri-right">${money(c.valor_total)}</div>
+      </a>`).join('') + '</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function abrirComanda() {
+  try {
+    const j = await api('/api/comandas/aberta?id=' + COMANDA_ID);
+    COM = j.comanda; ITENS = j.itens;
+    [SERVICOS, PRODUTOS, PROFS, FORMAS] = [
+      (await api('/api/servicos')).rows,
+      (await api('/api/produtos')).rows,
+      (await api('/api/profissionais')).rows,
+      (await api('/api/config')).config.formas_pagamento || ['Dinheiro','Pix','Cartão'],
+    ];
+    executorId = COM.profissional_id;
+    document.getElementById('titulo').textContent = COM.cliente_nome || 'Walk-in';
+    document.getElementById('sub').textContent = (COM.prof_nome || '') + ' · comanda #' + COM.id;
+    if (COM.status !== 'aberta') { document.getElementById('conteudo').innerHTML = '<div class="empty">Comanda já '+COM.status+'.</div>'; return; }
+    render();
+  } catch (e) { toast(e.message, 'err'); document.getElementById('conteudo').innerHTML = '<div class="empty">'+e.message+'</div>'; }
+}
+
+function render() {
+  const total = ITENS.reduce((s,i)=>s+Number(i.subtotal),0);
+  const cont = document.getElementById('conteudo');
+  cont.innerHTML = `
+    <div class="card">
+      <div class="field"><label>Barbeiro executando os serviços</label>
+        <select id="executor" onchange="executorId=this.value">
+          ${PROFS.map(p=>`<option value="${p.id}" ${p.id==executorId?'selected':''}>${escapeHtml(p.nome)}</option>`).join('')}
+        </select></div>
+      <div class="section-title" style="margin-top:4px">Serviços</div>
+      <div class="chips">${SERVICOS.map(s=>`<button class="chip" onclick="addItem('servico',${s.id})">${escapeHtml(s.nome)}<span class="p">${money(s.preco)}</span></button>`).join('')}</div>
+      <div class="section-title">Produtos</div>
+      <div class="chips">${PRODUTOS.map(p=>`<button class="chip" onclick="addItem('produto',${p.id})">${escapeHtml(p.nome)}<span class="p">${money(p.preco)}</span></button>`).join('')}</div>
+    </div>
+
+    <div class="section-title">Itens da comanda</div>
+    <div class="list" id="itens">${renderItens()}</div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="row-item" style="border:none;padding:0;margin-bottom:12px">
+        <div class="ri-main" style="font-size:1.1rem">Total</div>
+        <div class="ri-right" style="font-size:1.4rem;color:var(--accent)">${money(total)}</div>
+      </div>
+      <div class="field"><label>Forma de pagamento</label>
+        <select id="forma">${FORMAS.map(f=>`<option>${escapeHtml(f)}</option>`).join('')}</select></div>
+      <button class="btn btn-primary btn-block" onclick="fechar()">✓ Fechar comanda (${money(total)})</button>
+      <button class="btn btn-danger btn-block" style="margin-top:8px" onclick="cancelar()">Cancelar comanda</button>
+    </div>`;
+}
+
+function renderItens() {
+  if (!ITENS.length) return '<div class="empty">Nenhum item ainda. Toque num serviço ou produto acima.</div>';
+  return ITENS.map(i => `
+    <div class="row-item">
+      <div><div class="ri-main">${escapeHtml(i.descricao)} ${i.coberto_plano?'<span class="badge plano">plano</span>':''}</div>
+        <div class="ri-sub">${i.tipo} ${i.qtd>1?('· '+i.qtd+'x'):''}</div></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div class="ri-right">${i.coberto_plano?'<span class="muted">R$ 0</span>':money(i.subtotal)}</div>
+        <button class="btn btn-sm btn-danger" onclick="delItem(${i.id})">×</button>
+      </div>
+    </div>`).join('');
+}
+
+async function addItem(tipo, ref_id) {
+  try {
+    await api('/api/comandas/'+COM.id+'/itens', { method:'POST', body:{ tipo, ref_id, profissional_id: executorId } });
+    const j = await api('/api/comandas/aberta?id='+COM.id);
+    ITENS = j.itens; render();
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function delItem(id) {
+  try { await api('/api/comandas/itens/'+id, { method:'DELETE' }); const j = await api('/api/comandas/aberta?id='+COM.id); ITENS = j.itens; render(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function fechar() {
+  try {
+    const j = await api('/api/comandas/'+COM.id+'/fechar', { method:'POST', body:{ forma_pagamento: document.getElementById('forma').value } });
+    toast('Comanda fechada! ' + money(j.valor_total), 'ok');
+    setTimeout(()=>location.href='/', 700);
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function cancelar() {
+  if (!confirm('Cancelar esta comanda?')) return;
+  try { await api('/api/comandas/'+COM.id+'/cancelar', { method:'POST' }); toast('Cancelada.', 'ok'); setTimeout(()=>location.href='/',600); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+init();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

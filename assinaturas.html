@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Assinaturas</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Assinaturas</h1><div class="sub" id="sub">—</div></div></div></div>
+  <button class="btn btn-block" style="margin-bottom:12px" onclick="gerarCobrancas()">📅 Gerar cobranças do mês</button>
+  <div class="list" id="lista"><div class="empty">Carregando…</div></div>
+</div>
+<button class="btn btn-primary btn-fab" onclick="abrirNovo()">+</button>
+
+<div class="modal-bg" id="m">
+  <div class="modal">
+    <h2>Nova assinatura</h2>
+    <div class="field"><label>Cliente</label>
+      <input type="text" id="a-busca" placeholder="Buscar cliente..." oninput="buscar(this.value)">
+      <div id="a-res"></div><div id="a-sel" class="muted" style="margin-top:6px"></div></div>
+    <div class="field"><label>Plano</label><select id="a-plano"></select></div>
+    <div class="field"><label>Vencimento</label><select id="a-venc"><option value="10">Dia 10</option><option value="30">Dia 30</option></select></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('m')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvar()">Criar assinatura</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+let PLANOS = [], sel = null, _t;
+async function carregar() {
+  try {
+    const { rows } = await api('/api/assinaturas');
+    document.getElementById('sub').textContent = rows.filter(r=>r.status==='ativa').length + ' ativa(s)';
+    const cont = document.getElementById('lista');
+    if (!rows.length) { cont.innerHTML='<div class="empty">Nenhuma assinatura.</div>'; return; }
+    cont.innerHTML = rows.map(a => `
+      <div class="row-item">
+        <div><div class="ri-main">${escapeHtml(a.cliente_nome)} <span class="badge ${a.status}">${a.status}</span></div>
+          <div class="ri-sub">${escapeHtml(a.plano_nome)} · ${money(a.valor_mensal)}/mês · vence dia ${a.dia_vencimento}</div></div>
+        <div style="display:flex;gap:6px">
+          ${a.status==='ativa'?`<button class="btn btn-sm" onclick="status(${a.id},'pausada')">pausar</button>`:''}
+          ${a.status==='pausada'?`<button class="btn btn-sm" onclick="status(${a.id},'ativa')">ativar</button>`:''}
+          <button class="btn btn-sm btn-danger" onclick="status(${a.id},'cancelada')">×</button>
+        </div>
+      </div>`).join('');
+  } catch (e) { toast(e.message, 'err'); }
+}
+function buscar(v) {
+  clearTimeout(_t);
+  _t = setTimeout(async () => {
+    if (!v.trim()) { document.getElementById('a-res').innerHTML=''; return; }
+    const { rows } = await api('/api/clientes?q='+encodeURIComponent(v));
+    document.getElementById('a-res').innerHTML = rows.slice(0,6).map(c=>`<div class="row-item" style="margin-top:6px;cursor:pointer" onclick="sel={id:${c.id},nome:'${escapeHtml(c.nome)}'};document.getElementById('a-sel').textContent='✓ '+'${escapeHtml(c.nome)}';document.getElementById('a-res').innerHTML='';document.getElementById('a-busca').value='';"><div class="ri-main">${escapeHtml(c.nome)}</div></div>`).join('');
+  }, 250);
+}
+function abrirNovo() {
+  sel=null; document.getElementById('a-sel').textContent=''; document.getElementById('a-busca').value=''; document.getElementById('a-res').innerHTML='';
+  document.getElementById('a-plano').innerHTML = PLANOS.map(p=>`<option value="${p.id}">${escapeHtml(p.nome)} · ${money(p.valor_mensal)}</option>`).join('');
+  openModal('m');
+}
+async function salvar() {
+  if (!sel) return toast('Escolha o cliente.', 'err');
+  try {
+    await api('/api/assinaturas', { method:'POST', body:{ cliente_id: sel.id, plano_id: document.getElementById('a-plano').value, dia_vencimento: document.getElementById('a-venc').value } });
+    toast('Assinatura criada!', 'ok'); closeModal('m'); carregar();
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function status(id, s) {
+  if (s==='cancelada' && !confirm('Cancelar assinatura?')) return;
+  try { await api('/api/assinaturas/'+id, { method:'PUT', body:{ status:s } }); toast('Atualizado.', 'ok'); carregar(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function gerarCobrancas() {
+  try { const j = await api('/api/assinaturas/gerar-cobrancas', { method:'POST', body:{} });
+    toast(j.gerados>0?(j.gerados+' cobrança(s) gerada(s) — veja no Caixa.'):'Nada a gerar (já feito este mês).', 'ok'); }
+  catch (e) { toast(e.message, 'err'); }
+}
+(async () => { await renderShell('/mais'); PLANOS = (await api('/api/planos')).rows; carregar(); })();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

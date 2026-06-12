@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Entrar</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2338bdf8'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-size='18' font-weight='700' text-anchor='middle' fill='%230a0e17'%3EB%3C/text%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0a0e17;--surface:#111827;--surface2:#1a2235;--border:#1e293b;--text:#e2e8f0;--text-dim:#94a3b8;--accent:#38bdf8;--accent2:#818cf8;--red:#f87171; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:34px 26px; width:100%; max-width:380px; box-shadow:0 20px 60px rgba(0,0,0,0.4); }
+  .logo { width:56px; height:56px; border-radius:14px; background:linear-gradient(135deg,var(--accent),var(--accent2)); display:flex; align-items:center; justify-content:center; font-size:1.7rem; font-weight:700; color:var(--bg); margin:0 auto 16px; }
+  h1 { font-size:1.3rem; font-weight:700; text-align:center; background:linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .subtitle { text-align:center; color:var(--text-dim); font-size:0.82rem; margin:4px 0 24px; }
+  .field { margin-bottom:14px; }
+  .field label { display:block; font-size:0.72rem; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em; font-weight:600; }
+  .field input { width:100%; padding:13px 14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; color:var(--text); font-family:inherit; font-size:16px; }
+  .field input:focus { outline:none; border-color:var(--accent); }
+  .btn { width:100%; padding:14px; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:var(--bg); font-weight:700; border:none; border-radius:10px; cursor:pointer; font-size:0.95rem; font-family:inherit; margin-top:6px; }
+  .btn:disabled { opacity:0.6; }
+  .erro { background:rgba(248,113,113,0.1); border:1px solid rgba(248,113,113,0.3); color:var(--red); padding:10px 12px; border-radius:10px; font-size:0.82rem; margin-bottom:14px; display:none; }
+  .erro.show { display:block; }
+  .footer { text-align:center; margin-top:20px; color:var(--text-dim); font-size:0.7rem; font-family:'JetBrains Mono',monospace; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">B</div>
+    <h1>JOGA Barbearia</h1>
+    <p class="subtitle">Agenda · Caixa · Comissão</p>
+    <div id="erro" class="erro"></div>
+    <form id="f" autocomplete="on">
+      <div class="field"><label>E-mail</label><input type="email" id="email" required autofocus autocomplete="username"></div>
+      <div class="field"><label>Senha</label><input type="password" id="senha" required autocomplete="current-password"></div>
+      <button type="submit" class="btn" id="b">Entrar</button>
+    </form>
+    <div class="footer">JOGA Soluções Empresariais</div>
+  </div>
+<script>
+  const f = document.getElementById('f'), erro = document.getElementById('erro'), b = document.getElementById('b');
+  f.addEventListener('submit', async e => {
+    e.preventDefault(); erro.classList.remove('show'); b.disabled = true; b.textContent = 'Entrando...';
+    try {
+      const r = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin',
+        body: JSON.stringify({ email: email.value, senha: senha.value }) });
+      const j = await r.json();
+      if (j.ok) location.href = j.redirect || '/';
+      else { erro.textContent = j.error || 'Erro'; erro.classList.add('show'); b.disabled = false; b.textContent = 'Entrar'; }
+    } catch { erro.textContent = 'Erro de conexão.'; erro.classList.add('show'); b.disabled = false; b.textContent = 'Entrar'; }
+  });
+</script>
+</body>
+</html>

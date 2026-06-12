@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Minha comissão</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1 id="ola">Olá</h1><div class="sub">Sua comissão</div></div></div></div>
+
+  <div class="card kpi" style="text-align:center;padding:28px">
+    <div class="label">Comissão da quinzena</div>
+    <div class="value pos" id="comissao" style="font-size:2.4rem">—</div>
+    <div class="hint" id="breakdown"></div>
+    <div class="hint" id="periodo"></div>
+  </div>
+  <div class="grid2">
+    <div class="card kpi"><div class="label">Atend. assinantes</div><div class="value" id="atend">—</div></div>
+    <a class="card kpi" href="/" style="display:block"><div class="label">Ver</div><div class="value" style="font-size:1.1rem">📅 Minha agenda</div></a>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+(async () => {
+  await renderShell('/barbeiro');
+  document.getElementById('ola').textContent = 'Olá, ' + (ME.nome||'').split(' ')[0];
+  try {
+    const j = await api('/api/relatorios/minha-comissao');
+    document.getElementById('comissao').textContent = money(j.comissao);
+    document.getElementById('atend').textContent = j.atendimentos;
+    document.getElementById('breakdown').textContent = `avulso ${money(j.avulso||0)} + bolo ${money(j.pool_share||0)}`;
+    document.getElementById('periodo').textContent = j.periodo ? ('período ' + j.periodo.split(' a ').map(fmtData).join(' a ')) : '';
+  } catch (e) { toast(e.message, 'err'); }
+})();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

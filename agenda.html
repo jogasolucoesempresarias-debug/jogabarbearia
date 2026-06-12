@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Agenda</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brandlogo"><div class="ic">B</div><div><h1>Agenda</h1><div class="sub" id="data-label">—</div></div></div>
+  </div>
+
+  <div class="filters">
+    <button class="btn btn-sm" onclick="mudarDia(-1)">‹ Ontem</button>
+    <input type="date" id="f-data" class="field" style="flex:1" onchange="carregar()">
+    <button class="btn btn-sm" onclick="mudarDia(1)">Amanhã ›</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button class="btn btn-sm" onclick="irHoje()">Hoje</button>
+    <button class="btn btn-sm btn-primary" style="flex:1" onclick="abrirWalkin()">⚡ Walk-in (sem hora)</button>
+  </div>
+
+  <div id="conteudo"><div class="empty">Carregando…</div></div>
+</div>
+
+<!-- Modal novo agendamento -->
+<div class="modal-bg" id="mAgendar">
+  <div class="modal">
+    <h2>Novo agendamento</h2>
+    <div class="card" style="margin-bottom:12px"><div id="ag-ctx" class="muted"></div></div>
+    <div class="field"><label>Cliente</label>
+      <div style="display:flex;gap:6px">
+        <input type="text" id="ag-cli-busca" style="flex:1" placeholder="Buscar cliente..." oninput="buscarCli(this.value,'ag')">
+        <button type="button" class="btn btn-sm" onclick="novoClienteRapido('ag')">+ novo</button>
+      </div>
+      <div id="ag-cli-res"></div>
+      <div id="ag-cli-sel" class="muted" style="margin-top:6px"></div>
+    </div>
+    <div class="field"><label>Serviços (pode escolher vários)</label>
+      <div class="chips" id="ag-serv-chips"></div>
+      <div class="hint" id="ag-dur"></div></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('mAgendar')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvarAgendamento()">Agendar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal ação no agendamento -->
+<div class="modal-bg" id="mAcao">
+  <div class="modal">
+    <h2 id="ac-titulo">Agendamento</h2>
+    <div class="card"><div id="ac-info"></div></div>
+    <button class="btn btn-primary btn-block" style="margin-top:10px" onclick="abrirComandaDoAgendamento()">🧾 Abrir comanda (atender)</button>
+    <button class="btn btn-block" style="margin-top:8px" onclick="acaoAgendamento('falta')">Marcar falta</button>
+    <button class="btn btn-danger btn-block" style="margin-top:8px" onclick="acaoAgendamento('cancelado')">Cancelar agendamento</button>
+    <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="closeModal('mAcao')">Fechar</button>
+  </div>
+</div>
+
+<!-- Modal walk-in -->
+<div class="modal-bg" id="mWalkin">
+  <div class="modal">
+    <h2>Walk-in — atender agora</h2>
+    <div class="field"><label>Barbeiro</label><select id="wk-prof"></select></div>
+    <div class="field"><label>Cliente (opcional)</label>
+      <div style="display:flex;gap:6px">
+        <input type="text" id="wk-cli-busca" style="flex:1" placeholder="Buscar cliente..." oninput="buscarCli(this.value,'wk')">
+        <button type="button" class="btn btn-sm" onclick="novoClienteRapido('wk')">+ novo</button>
+      </div>
+      <div id="wk-cli-res"></div>
+      <div id="wk-cli-sel" class="muted" style="margin-top:6px"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('mWalkin')">Cancelar</button>
+      <button class="btn btn-primary" onclick="abrirWalkinComanda()">Abrir comanda</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal cadastro rápido de cliente -->
+<div class="modal-bg" id="mNovoCli">
+  <div class="modal">
+    <h2>Novo cliente</h2>
+    <div class="field"><label>Nome *</label><input id="nc-nome"></div>
+    <div class="field"><label>Telefone</label><input id="nc-tel" type="tel" inputmode="tel"></div>
+    <div class="field"><label>Tipo</label><select id="nc-tipo"><option value="universal">Universal</option><option value="fixo">Fixo</option></select></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('mNovoCli')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvarNovoCliente()">Criar e selecionar</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+let DADOS = null, SERVICOS = [], PROFS = [], ctxAgendar = {}, ctxAcao = {}, ctxNovoCli = null;
+let selCli = { ag: null, wk: null };
+
+function setData(iso) { document.getElementById('f-data').value = iso; }
+function mudarDia(n) { const d = new Date(document.getElementById('f-data').value + 'T00:00:00'); d.setDate(d.getDate()+n); setData(d.toISOString().slice(0,10)); carregar(); }
+function irHoje() { setData(hoje()); carregar(); }
+
+async function carregar() {
+  const data = document.getElementById('f-data').value || hoje();
+  try {
+    DADOS = await api('/api/agenda?data=' + data);
+    SERVICOS = (await api('/api/servicos')).rows;
+    PROFS = DADOS.profissionais;
+    const d = new Date(data + 'T00:00:00');
+    document.getElementById('data-label').textContent = DIAS_SEMANA[d.getDay()] + ' · ' + fmtData(data);
+    render();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function slotsDoDia() {
+  const h = DADOS.horario_dia;
+  if (!h) return null;
+  const [a1,a2] = h.abre.split(':').map(Number), [f1,f2] = h.fecha.split(':').map(Number);
+  const ini = a1*60+a2, fim = f1*60+f2, step = DADOS.slot_min;
+  const out = [];
+  for (let m = ini; m < fim; m += step) out.push(String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0'));
+  return out;
+}
+
+function render() {
+  const cont = document.getElementById('conteudo');
+  if (!DADOS.horario_dia) { cont.innerHTML = '<div class="empty">Fechado neste dia. 🔒</div>'; return; }
+  const slots = slotsDoDia();
+  // ocupa TODOS os slots da duração (não só o início)
+  const occ = {};
+  DADOS.agendamentos.forEach(a => {
+    const idx = slots.indexOf(hhmm(a.hora_inicio));
+    if (idx < 0) return;
+    const n = Math.max(1, a.duracao_slots || 1);
+    for (let j = 0; j < n && slots[idx + j]; j++) occ[a.profissional_id + '@' + slots[idx + j]] = { ag: a, start: j === 0 };
+  });
+  const bloq = DADOS.bloqueios;
+  function bloqueado(profId, slot) {
+    return bloq.some(b => b.profissional_id === profId && hhmm(b.hora_inicio) <= slot && slot < hhmm(b.hora_fim));
+  }
+
+  const cols = PROFS.length;
+  let html = `<div class="agenda-scroll"><div class="agenda-grid" style="grid-template-columns:44px repeat(${cols},1fr)">`;
+  html += `<div></div>` + PROFS.map(p => `<div class="agenda-col-head"><span class="dot" style="background:${p.cor_agenda}"></span>${escapeHtml(p.nome)}</div>`).join('');
+  slots.forEach(slot => {
+    html += `<div class="timecol">${slot}</div>`;
+    PROFS.forEach(p => {
+      const o = occ[p.id + '@' + slot];
+      if (o && o.start) {
+        const ag = o.ag;
+        const servTxt = (ag.servicos_nomes && ag.servicos_nomes.length) ? ag.servicos_nomes.join(', ') : (ag.servico_nome || '');
+        html += `<div class="slot ocupado" onclick="abrirAcao(${ag.id})">
+          <strong>${escapeHtml(ag.cliente_nome || 'Cliente')}</strong>
+          <span class="muted">${escapeHtml(servTxt)}</span></div>`;
+      } else if (o) {
+        html += `<div class="slot ocupado" onclick="abrirAcao(${o.ag.id})"><span class="muted">↳ ${escapeHtml(o.ag.cliente_nome || '')}</span></div>`;
+      } else if (bloqueado(p.id, slot)) {
+        html += `<div class="slot bloqueado">—</div>`;
+      } else {
+        html += `<div class="slot livre" onclick="abrirAgendar(${p.id},'${slot}')">+ </div>`;
+      }
+    });
+  });
+  html += `</div></div>`;
+  cont.innerHTML = html;
+}
+
+// ── Busca de cliente (reutilizável) ──
+let _t;
+function buscarCli(v, ctx) {
+  clearTimeout(_t);
+  _t = setTimeout(async () => {
+    if (!v.trim()) { document.getElementById(ctx+'-cli-res').innerHTML=''; return; }
+    try {
+      const { rows } = await api('/api/clientes?q=' + encodeURIComponent(v));
+      document.getElementById(ctx+'-cli-res').innerHTML = rows.slice(0,6).map(c =>
+        `<div class="row-item" style="margin-top:6px;cursor:pointer" onclick="selecionarCli(${ctx==='ag'?1:0},${c.id},'${escapeHtml(c.nome)}','${ctx}')">
+          <div><div class="ri-main">${escapeHtml(c.nome)}</div><div class="ri-sub">${escapeHtml(c.telefone||'')} ${c.tipo==='fixo'?'· fixo':''}</div></div></div>`).join('');
+    } catch {}
+  }, 250);
+}
+function selecionarCli(_x, id, nome, ctx) {
+  selCli[ctx] = { id, nome };
+  document.getElementById(ctx+'-cli-sel').innerHTML = '✓ ' + nome;
+  document.getElementById(ctx+'-cli-res').innerHTML = '';
+  document.getElementById(ctx+'-cli-busca').value = '';
+}
+
+// ── Cadastro rápido na própria agenda ──
+function novoClienteRapido(ctx) {
+  ctxNovoCli = ctx;
+  ['nc-nome','nc-tel'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('nc-tipo').value = 'universal';
+  openModal('mNovoCli');
+}
+async function salvarNovoCliente() {
+  const nome = document.getElementById('nc-nome').value.trim();
+  if (!nome) return toast('Informe o nome.', 'err');
+  try {
+    const j = await api('/api/clientes', { method:'POST', body:{
+      nome, telefone: document.getElementById('nc-tel').value, tipo: document.getElementById('nc-tipo').value }});
+    selecionarCli(0, j.row.id, j.row.nome, ctxNovoCli);
+    closeModal('mNovoCli'); toast('Cliente criado!', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// ── Novo agendamento ──
+function abrirAgendar(profId, slot) {
+  const p = PROFS.find(x => x.id === profId);
+  ctxAgendar = { profId, slot };
+  selCli.ag = null; window._agServ = [];
+  document.getElementById('ag-ctx').textContent = `${p.nome} · ${slot} · ${fmtData(document.getElementById('f-data').value)}`;
+  document.getElementById('ag-cli-sel').innerHTML = '';
+  document.getElementById('ag-cli-busca').value = '';
+  document.getElementById('ag-cli-res').innerHTML = '';
+  document.getElementById('ag-serv-chips').innerHTML = SERVICOS.map(s =>
+    `<button class="chip" id="agsrv-${s.id}" onclick="toggleAgServ(${s.id})">${escapeHtml(s.nome)}<span class="p">${money(s.preco)} · ${s.duracao_min}min</span></button>`).join('');
+  atualizarAgDur();
+  openModal('mAgendar');
+}
+function toggleAgServ(id) {
+  const a = window._agServ, i = a.indexOf(id);
+  if (i < 0) a.push(id); else a.splice(i, 1);
+  document.getElementById('agsrv-' + id).style = a.includes(id) ? 'border-color:var(--accent);color:var(--accent)' : '';
+  atualizarAgDur();
+}
+function atualizarAgDur() {
+  const ids = window._agServ || [];
+  let dur = 0, val = 0;
+  ids.forEach(id => { const s = SERVICOS.find(x => x.id === id); if (s) { dur += s.duracao_min; val += Number(s.preco); } });
+  document.getElementById('ag-dur').textContent = ids.length ? `~${dur}min · ${money(val)}` : 'Selecione 1 ou mais serviços.';
+}
+async function salvarAgendamento() {
+  try {
+    await api('/api/agendamentos', { method:'POST', body: {
+      profissional_id: ctxAgendar.profId, hora_inicio: ctxAgendar.slot,
+      data: document.getElementById('f-data').value,
+      cliente_id: selCli.ag ? selCli.ag.id : null,
+      servicos_ids: window._agServ || [],
+    }});
+    toast('Agendado!', 'ok'); closeModal('mAgendar'); carregar();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// ── Ação no agendamento ──
+function abrirAcao(agId) {
+  const ag = DADOS.agendamentos.find(a => a.id === agId);
+  ctxAcao = ag;
+  const servTxt = (ag.servicos_nomes && ag.servicos_nomes.length) ? ag.servicos_nomes.join(', ') : (ag.servico_nome || '—');
+  document.getElementById('ac-info').innerHTML =
+    `<strong>${escapeHtml(ag.cliente_nome||'Cliente')}</strong><br>
+     <span class="muted">${escapeHtml(servTxt)} · ${hhmm(ag.hora_inicio)}</span>`;
+  openModal('mAcao');
+}
+async function acaoAgendamento(status) {
+  try { await api('/api/agendamentos/'+ctxAcao.id, { method:'PUT', body:{ status } }); toast('Atualizado.', 'ok'); closeModal('mAcao'); carregar(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function abrirComandaDoAgendamento() {
+  try {
+    const j = await api('/api/comandas', { method:'POST', body:{ agendamento_id: ctxAcao.id } });
+    location.href = '/comanda?id=' + j.id;
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// ── Walk-in ──
+function abrirWalkin() {
+  selCli.wk = null;
+  document.getElementById('wk-prof').innerHTML = PROFS.map(p => `<option value="${p.id}">${escapeHtml(p.nome)}</option>`).join('');
+  document.getElementById('wk-cli-sel').innerHTML = ''; document.getElementById('wk-cli-busca').value=''; document.getElementById('wk-cli-res').innerHTML='';
+  openModal('mWalkin');
+}
+async function abrirWalkinComanda() {
+  try {
+    const j = await api('/api/comandas', { method:'POST', body:{
+      profissional_id: document.getElementById('wk-prof').value,
+      cliente_id: selCli.wk ? selCli.wk.id : null }});
+    location.href = '/comanda?id=' + j.id;
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+setData(hoje());
+renderShell('/');
+carregar();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

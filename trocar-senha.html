@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Trocar senha</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0a0e17;--surface:#111827;--surface2:#1a2235;--border:#1e293b;--text:#e2e8f0;--text-dim:#94a3b8;--accent:#38bdf8;--accent2:#818cf8;--red:#f87171;--green:#34d399;--yellow:#fbbf24; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:32px 26px; width:100%; max-width:400px; }
+  .logo { width:52px; height:52px; border-radius:13px; background:linear-gradient(135deg,var(--accent),var(--accent2)); display:flex; align-items:center; justify-content:center; font-size:1.5rem; font-weight:700; color:var(--bg); margin:0 auto 14px; }
+  h1 { font-size:1.25rem; font-weight:700; text-align:center; }
+  .subtitle { text-align:center; color:var(--text-dim); font-size:0.82rem; margin:4px 0 18px; }
+  .aviso { background:rgba(251,191,36,0.1); border:1px solid rgba(251,191,36,0.3); color:var(--yellow); padding:10px 12px; border-radius:10px; font-size:0.78rem; margin-bottom:16px; }
+  .field { margin-bottom:14px; }
+  .field label { display:block; font-size:0.72rem; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; font-weight:600; }
+  .field input { width:100%; padding:13px 14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; color:var(--text); font-family:inherit; font-size:16px; }
+  .field input:focus { outline:none; border-color:var(--accent); }
+  .btn { width:100%; padding:14px; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:var(--bg); font-weight:700; border:none; border-radius:10px; cursor:pointer; font-size:0.95rem; font-family:inherit; }
+  .erro,.ok { padding:10px 12px; border-radius:10px; font-size:0.82rem; margin-bottom:14px; display:none; }
+  .erro { background:rgba(248,113,113,0.1); border:1px solid rgba(248,113,113,0.3); color:var(--red); }
+  .ok { background:rgba(52,211,153,0.1); border:1px solid rgba(52,211,153,0.3); color:var(--green); }
+  .show { display:block; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">B</div>
+    <h1>Trocar senha</h1>
+    <p class="subtitle">Primeira vez no sistema</p>
+    <div class="aviso">Defina sua senha. Mínimo 6 caracteres.</div>
+    <div id="erro" class="erro"></div><div id="ok" class="ok"></div>
+    <form id="f">
+      <div class="field"><label>Nova senha</label><input type="password" id="nova" required minlength="6" autofocus autocomplete="new-password"></div>
+      <div class="field"><label>Confirmar</label><input type="password" id="confirma" required minlength="6" autocomplete="new-password"></div>
+      <button type="submit" class="btn" id="b">Salvar</button>
+    </form>
+  </div>
+<script>
+  const f=document.getElementById('f'),erro=document.getElementById('erro'),ok=document.getElementById('ok'),b=document.getElementById('b');
+  f.addEventListener('submit', async e => {
+    e.preventDefault(); erro.classList.remove('show'); ok.classList.remove('show');
+    if (nova.value !== confirma.value) { erro.textContent='A confirmação não bate.'; erro.classList.add('show'); return; }
+    b.disabled=true; b.textContent='Salvando...';
+    try {
+      const r = await fetch('/api/trocar-senha',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({nova:nova.value,confirma:confirma.value})});
+      const j = await r.json();
+      if (j.ok) { ok.textContent='Senha alterada!'; ok.classList.add('show'); setTimeout(()=>location.href=j.redirect||'/',700); }
+      else { erro.textContent=j.error||'Erro'; erro.classList.add('show'); b.disabled=false; b.textContent='Salvar'; }
+    } catch { erro.textContent='Erro de conexão.'; erro.classList.add('show'); b.disabled=false; b.textContent='Salvar'; }
+  });
+</script>
+</body>
+</html>

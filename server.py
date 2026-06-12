@@ -1,0 +1,972 @@
+"""
+JOGA Barbearia — Backend (Flask + Waitress)
+Rode: python -X utf8 server.py   ·   Acesse: http://localhost:5000
+"""
+import os
+import math
+import functools
+from datetime import date, datetime, time
+
+import psycopg2
+from psycopg2.extras import RealDictCursor, Json
+from flask import Flask, jsonify, send_from_directory, request, session, redirect
+from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__, static_folder=None)
+app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-change-me')
+CORS(app, supports_credentials=True)
+
+
+# ── Banco ─────────────────────────────────────────────────────────────
+def get_db():
+    return psycopg2.connect(
+        host=os.getenv('DB_HOST', 'localhost'), port=os.getenv('DB_PORT', '5432'),
+        dbname=os.getenv('DB_NAME', 'joga_barbearia'),
+        user=os.getenv('DB_USER', 'postgres'), password=os.getenv('DB_PASSWORD', ''),
+    )
+
+
+def _ser(v):
+    from decimal import Decimal
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, (date, datetime)):
+        return v.isoformat()
+    if isinstance(v, time):
+        return v.strftime('%H:%M')
+    return v
+
+
+def _clean(row):
+    return None if row is None else {k: _ser(v) for k, v in row.items()}
+
+
+def q_all(sql, params=None):
+    conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(sql, params or ()); rows = [_clean(r) for r in cur.fetchall()]
+    cur.close(); conn.close(); return rows
+
+
+def q_one(sql, params=None):
+    conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(sql, params or ()); row = cur.fetchone()
+    cur.close(); conn.close(); return _clean(row)
+
+
+def execute(sql, params=None, returning=False):
+    conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(sql, params or ()); out = _clean(cur.fetchone()) if returning else None
+    conn.commit(); cur.close(); conn.close(); return out
+
+
+def scalar(sql, params=None):
+    from decimal import Decimal
+    conn = get_db(); cur = conn.cursor()
+    cur.execute(sql, params or ()); row = cur.fetchone()
+    cur.close(); conn.close()
+    v = row[0] if row else None
+    return float(v) if isinstance(v, Decimal) else v
+
+
+# ── Helpers ───────────────────────────────────────────────────────────
+def parse_date(s, default=None):
+    try:
+        return date.fromisoformat(str(s)[:10])
+    except (ValueError, TypeError):
+        return default
+
+
+def js_weekday(d: date) -> int:
+    """0=domingo .. 6=sábado (igual JS getDay)."""
+    return (d.weekday() + 1) % 7
+
+
+def cfg():
+    return q_one("SELECT * FROM configuracoes WHERE id=1") or {}
+
+
+def cobertura_plano(cliente_id, servico_id, d: date):
+    """Retorna (coberto:bool, assinatura_id|None) p/ um serviço de um cliente numa data."""
+    if not cliente_id:
+        return (False, None)
+    row = q_one("""
+        SELECT a.id, p.dias_inclusos, p.limite_uso
+        FROM assinaturas a
+        JOIN planos p ON p.id = a.plano_id
+        JOIN plano_servicos ps ON ps.plano_id = p.id AND ps.servico_id = %s
+        WHERE a.cliente_id = %s AND a.status = 'ativa'
+          AND a.data_inicio <= %s AND (a.data_fim IS NULL OR a.data_fim >= %s)
+        LIMIT 1
+    """, (servico_id, cliente_id, d, d))
+    if not row:
+        return (False, None)
+    dias = row['dias_inclusos'] or []
+    if js_weekday(d) not in dias:
+        return (False, None)
+    if row['limite_uso'] is not None:
+        usados = scalar("""
+            SELECT COUNT(*) FROM comanda_itens ci JOIN comandas c ON c.id = ci.comanda_id
+            WHERE ci.assinatura_id = %s AND ci.coberto_plano
+              AND date_trunc('month', c.aberta_em) = date_trunc('month', %s::timestamp)
+        """, (row['id'], d)) or 0
+        if usados >= row['limite_uso']:
+            return (False, None)
+    return (True, row['id'])
+
+
+# ── Auth ──────────────────────────────────────────────────────────────
+def login_required(f):
+    @functools.wraps(f)
+    def dec(*a, **k):
+        if 'user_id' not in session:
+            if request.path.startswith('/api/'):
+                return jsonify({'ok': False, 'error': 'Não autenticado'}), 401
+            return redirect('/login')
+        if session.get('must_change_password') and request.path not in ('/trocar-senha', '/api/trocar-senha'):
+            if request.path.startswith('/api/'):
+                return jsonify({'ok': False, 'error': 'Troque a senha', 'redirect': '/trocar-senha'}), 403
+            return redirect('/trocar-senha')
+        return f(*a, **k)
+    return dec
+
+
+def role_required(*roles):
+    def wrap(f):
+        @functools.wraps(f)
+        def dec(*a, **k):
+            if session.get('role') not in roles:
+                return jsonify({'ok': False, 'error': 'Acesso negado'}), 403
+            return f(*a, **k)
+        return dec
+    return wrap
+
+
+# ── Páginas ───────────────────────────────────────────────────────────
+PAGINAS = {
+    '/':            'agenda.html',
+    '/comanda':     'comanda.html',
+    '/clientes':    'clientes.html',
+    '/assinaturas': 'assinaturas.html',
+    '/caixa':       'caixa.html',
+    '/relatorios':  'relatorios.html',
+    '/config':      'config.html',
+    '/barbeiro':    'barbeiro.html',
+}
+
+
+@app.route('/static/<path:filename>')
+def static_assets(filename):
+    return send_from_directory(os.path.join(BASE_DIR, 'static'), filename)
+
+
+@app.route('/manifest.json')
+def manifest():
+    return send_from_directory(BASE_DIR, 'manifest.json')
+
+
+@app.route('/sw.js')
+def service_worker():
+    return send_from_directory(BASE_DIR, 'sw.js')
+
+
+@app.route('/health')
+def health():
+    return jsonify({'ok': True, 'service': 'joga-barbearia'}), 200
+
+
+@app.route('/login', methods=['GET'])
+def login_page():
+    if 'user_id' in session and not session.get('must_change_password'):
+        return redirect('/')
+    return send_from_directory(BASE_DIR, 'login.html')
+
+
+@app.route('/trocar-senha', methods=['GET'])
+def trocar_senha_page():
+    if 'user_id' not in session:
+        return redirect('/login')
+    return send_from_directory(BASE_DIR, 'trocar-senha.html')
+
+
+@app.route('/<path:rota>')
+@app.route('/', endpoint='root')
+@login_required
+def pagina(rota=''):
+    arquivo = PAGINAS.get('/' + rota if rota else '/')
+    if not arquivo:
+        return jsonify({'ok': False, 'error': 'Página não encontrada'}), 404
+    return send_from_directory(BASE_DIR, arquivo)
+
+
+# ── Auth API ──────────────────────────────────────────────────────────
+@app.route('/api/login', methods=['POST'])
+def login_post():
+    d = request.get_json() or {}
+    email = (d.get('email') or '').strip().lower()
+    senha = d.get('senha') or ''
+    if not email or not senha:
+        return jsonify({'ok': False, 'error': 'Preencha e-mail e senha'}), 400
+    u = q_one("SELECT * FROM usuarios WHERE email=%s", (email,))
+    if not u or not check_password_hash(u['password_hash'], senha):
+        return jsonify({'ok': False, 'error': 'E-mail ou senha inválidos'}), 401
+    if not u['ativo']:
+        return jsonify({'ok': False, 'error': 'Conta desativada'}), 403
+    session['user_id'] = u['id']
+    session['nome'] = u['nome']
+    session['role'] = u['role']
+    session['profissional_id'] = u['profissional_id']
+    session['must_change_password'] = bool(u['must_change_password'])
+    return jsonify({'ok': True, 'redirect': '/trocar-senha' if u['must_change_password'] else '/'})
+
+
+@app.route('/api/trocar-senha', methods=['POST'])
+@login_required
+def trocar_senha_post():
+    d = request.get_json() or {}
+    nova, confirma = d.get('nova', ''), d.get('confirma', '')
+    if len(nova) < 6:
+        return jsonify({'ok': False, 'error': 'Mínimo 6 caracteres'}), 400
+    if nova != confirma:
+        return jsonify({'ok': False, 'error': 'Confirmação não bate'}), 400
+    execute("UPDATE usuarios SET password_hash=%s, must_change_password=false WHERE id=%s",
+            (generate_password_hash(nova), session['user_id']))
+    session['must_change_password'] = False
+    return jsonify({'ok': True, 'redirect': '/'})
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
+
+
+@app.route('/api/me')
+@login_required
+def me():
+    c = cfg()
+    return jsonify({'ok': True, 'nome': session.get('nome'), 'role': session.get('role'),
+                    'profissional_id': session.get('profissional_id'),
+                    'marca': {'nome': c.get('marca_nome'), 'cor': c.get('marca_cor')}})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Cadastros / Config
+# ══════════════════════════════════════════════════════════════════════
+@app.route('/api/profissionais', methods=['GET'])
+@login_required
+def prof_list():
+    return jsonify({'ok': True, 'rows': q_all("SELECT * FROM profissionais WHERE ativo ORDER BY nome")})
+
+
+@app.route('/api/profissionais', methods=['POST'])
+@login_required
+@role_required('dono')
+def prof_create():
+    d = request.get_json() or {}
+    if not (d.get('nome') or '').strip():
+        return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
+    row = execute("INSERT INTO profissionais (nome, comissao_pct, cor_agenda) VALUES (%s,%s,%s) RETURNING *",
+                  (d['nome'].strip(), d.get('comissao_pct') or 45, d.get('cor_agenda') or '#38bdf8'), returning=True)
+    return jsonify({'ok': True, 'row': row})
+
+
+@app.route('/api/profissionais/<int:pid>', methods=['PUT'])
+@login_required
+@role_required('dono')
+def prof_update(pid):
+    d = request.get_json() or {}
+    execute("UPDATE profissionais SET nome=COALESCE(%s,nome), comissao_pct=COALESCE(%s,comissao_pct), cor_agenda=COALESCE(%s,cor_agenda) WHERE id=%s",
+            (d.get('nome'), d.get('comissao_pct'), d.get('cor_agenda'), pid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/profissionais/<int:pid>', methods=['DELETE'])
+@login_required
+@role_required('dono')
+def prof_delete(pid):
+    execute("UPDATE profissionais SET ativo=false WHERE id=%s", (pid,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/servicos', methods=['GET'])
+@login_required
+def serv_list():
+    return jsonify({'ok': True, 'rows': q_all("SELECT * FROM servicos WHERE ativo ORDER BY nome")})
+
+
+@app.route('/api/servicos', methods=['POST'])
+@login_required
+@role_required('dono')
+def serv_create():
+    d = request.get_json() or {}
+    if not (d.get('nome') or '').strip():
+        return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
+    row = execute("INSERT INTO servicos (nome, preco, duracao_min) VALUES (%s,%s,%s) RETURNING *",
+                  (d['nome'].strip(), d.get('preco') or 0, d.get('duracao_min') or 30), returning=True)
+    return jsonify({'ok': True, 'row': row})
+
+
+@app.route('/api/servicos/<int:sid>', methods=['PUT'])
+@login_required
+@role_required('dono')
+def serv_update(sid):
+    d = request.get_json() or {}
+    execute("UPDATE servicos SET nome=COALESCE(%s,nome), preco=COALESCE(%s,preco), duracao_min=COALESCE(%s,duracao_min) WHERE id=%s",
+            (d.get('nome'), d.get('preco'), d.get('duracao_min'), sid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/servicos/<int:sid>', methods=['DELETE'])
+@login_required
+@role_required('dono')
+def serv_delete(sid):
+    execute("UPDATE servicos SET ativo=false WHERE id=%s", (sid,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/produtos', methods=['GET'])
+@login_required
+def prod_list():
+    return jsonify({'ok': True, 'rows': q_all("SELECT * FROM produtos WHERE ativo ORDER BY nome")})
+
+
+@app.route('/api/produtos', methods=['POST'])
+@login_required
+@role_required('dono')
+def prod_create():
+    d = request.get_json() or {}
+    if not (d.get('nome') or '').strip():
+        return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
+    row = execute("INSERT INTO produtos (nome, preco) VALUES (%s,%s) RETURNING *",
+                  (d['nome'].strip(), d.get('preco') or 0), returning=True)
+    return jsonify({'ok': True, 'row': row})
+
+
+@app.route('/api/produtos/<int:pid>', methods=['PUT'])
+@login_required
+@role_required('dono')
+def prod_update(pid):
+    d = request.get_json() or {}
+    execute("UPDATE produtos SET nome=COALESCE(%s,nome), preco=COALESCE(%s,preco) WHERE id=%s",
+            (d.get('nome'), d.get('preco'), pid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/produtos/<int:pid>', methods=['DELETE'])
+@login_required
+@role_required('dono')
+def prod_delete(pid):
+    execute("UPDATE produtos SET ativo=false WHERE id=%s", (pid,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/clientes', methods=['GET'])
+@login_required
+def cli_list():
+    busca = (request.args.get('q') or '').strip()
+    if busca:
+        rows = q_all("""SELECT c.*, p.nome AS prof_nome FROM clientes c
+                        LEFT JOIN profissionais p ON p.id=c.profissional_fixo_id
+                        WHERE c.ativo AND (c.nome ILIKE %s OR c.telefone ILIKE %s) ORDER BY c.nome LIMIT 50""",
+                     (f"%{busca}%", f"%{busca}%"))
+    else:
+        rows = q_all("""SELECT c.*, p.nome AS prof_nome FROM clientes c
+                        LEFT JOIN profissionais p ON p.id=c.profissional_fixo_id
+                        WHERE c.ativo ORDER BY c.nome LIMIT 200""")
+    return jsonify({'ok': True, 'rows': rows})
+
+
+@app.route('/api/clientes/<int:cid>', methods=['GET'])
+@login_required
+def cli_detail(cid):
+    c = q_one("SELECT * FROM clientes WHERE id=%s", (cid,))
+    if not c:
+        return jsonify({'ok': False, 'error': 'Cliente não encontrado'}), 404
+    assinatura = q_one("""SELECT a.*, pl.nome AS plano_nome, pl.valor_mensal FROM assinaturas a
+                          JOIN planos pl ON pl.id=a.plano_id
+                          WHERE a.cliente_id=%s AND a.status='ativa' ORDER BY a.id DESC LIMIT 1""", (cid,))
+    return jsonify({'ok': True, 'cliente': c, 'assinatura': assinatura})
+
+
+@app.route('/api/clientes', methods=['POST'])
+@login_required
+def cli_create():
+    d = request.get_json() or {}
+    nome = (d.get('nome') or '').strip()
+    if not nome:
+        return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
+    tipo = d.get('tipo') if d.get('tipo') in ('fixo', 'universal') else 'universal'
+    row = execute("""INSERT INTO clientes (nome, telefone, tipo, profissional_fixo_id, observacoes)
+                     VALUES (%s,%s,%s,%s,%s) RETURNING *""",
+                  (nome, d.get('telefone'), tipo, d.get('profissional_fixo_id') or None, d.get('observacoes')),
+                  returning=True)
+    return jsonify({'ok': True, 'row': row})
+
+
+@app.route('/api/clientes/<int:cid>', methods=['PUT'])
+@login_required
+def cli_update(cid):
+    d = request.get_json() or {}
+    execute("""UPDATE clientes SET nome=COALESCE(%s,nome), telefone=%s, tipo=COALESCE(%s,tipo),
+               profissional_fixo_id=%s, observacoes=%s WHERE id=%s""",
+            (d.get('nome'), d.get('telefone'), d.get('tipo'), d.get('profissional_fixo_id') or None,
+             d.get('observacoes'), cid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/clientes/<int:cid>', methods=['DELETE'])
+@login_required
+def cli_delete(cid):
+    execute("UPDATE clientes SET ativo=false WHERE id=%s", (cid,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/planos', methods=['GET'])
+@login_required
+def plano_list():
+    rows = q_all("SELECT * FROM planos WHERE ativo ORDER BY nome")
+    for p in rows:
+        p['servicos'] = q_all("""SELECT s.id, s.nome FROM plano_servicos ps
+                                 JOIN servicos s ON s.id=ps.servico_id WHERE ps.plano_id=%s""", (p['id'],))
+    return jsonify({'ok': True, 'rows': rows})
+
+
+@app.route('/api/planos', methods=['POST'])
+@login_required
+@role_required('dono')
+def plano_create():
+    d = request.get_json() or {}
+    if not (d.get('nome') or '').strip():
+        return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
+    row = execute("""INSERT INTO planos (nome, valor_mensal, limite_uso, dias_inclusos,
+                     comissao_assinante_regra, comissao_assinante_valor)
+                     VALUES (%s,%s,%s,%s,%s,%s) RETURNING *""",
+                  (d['nome'].strip(), d.get('valor_mensal') or 0, d.get('limite_uso') or None,
+                   Json(d.get('dias_inclusos') or [1, 2, 3]),
+                   d.get('comissao_assinante_regra') or 'tabela', d.get('comissao_assinante_valor') or None),
+                  returning=True)
+    for sid in (d.get('servicos') or []):
+        execute("INSERT INTO plano_servicos (plano_id, servico_id) VALUES (%s,%s) ON CONFLICT DO NOTHING", (row['id'], sid))
+    return jsonify({'ok': True, 'row': row})
+
+
+@app.route('/api/planos/<int:pid>', methods=['PUT'])
+@login_required
+@role_required('dono')
+def plano_update(pid):
+    d = request.get_json() or {}
+    execute("""UPDATE planos SET nome=COALESCE(%s,nome), valor_mensal=COALESCE(%s,valor_mensal),
+               limite_uso=%s, dias_inclusos=COALESCE(%s,dias_inclusos),
+               comissao_assinante_regra=COALESCE(%s,comissao_assinante_regra),
+               comissao_assinante_valor=%s WHERE id=%s""",
+            (d.get('nome'), d.get('valor_mensal'), d.get('limite_uso') or None,
+             Json(d['dias_inclusos']) if d.get('dias_inclusos') is not None else None,
+             d.get('comissao_assinante_regra'), d.get('comissao_assinante_valor') or None, pid))
+    if d.get('servicos') is not None:
+        execute("DELETE FROM plano_servicos WHERE plano_id=%s", (pid,))
+        for sid in d['servicos']:
+            execute("INSERT INTO plano_servicos (plano_id, servico_id) VALUES (%s,%s) ON CONFLICT DO NOTHING", (pid, sid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/config', methods=['GET'])
+@login_required
+def config_get():
+    return jsonify({'ok': True, 'config': cfg()})
+
+
+@app.route('/api/config', methods=['PUT'])
+@login_required
+@role_required('dono')
+def config_update():
+    d = request.get_json() or {}
+    execute("""UPDATE configuracoes SET
+                 slot_min=COALESCE(%s,slot_min), comissao_padrao=COALESCE(%s,comissao_padrao),
+                 formas_pagamento=COALESCE(%s,formas_pagamento), horarios=COALESCE(%s,horarios),
+                 marca_nome=COALESCE(%s,marca_nome), marca_cor=COALESCE(%s,marca_cor), marca_logo_url=%s
+               WHERE id=1""",
+            (d.get('slot_min'), d.get('comissao_padrao'),
+             Json(d['formas_pagamento']) if d.get('formas_pagamento') is not None else None,
+             Json(d['horarios']) if d.get('horarios') is not None else None,
+             d.get('marca_nome'), d.get('marca_cor'), d.get('marca_logo_url')))
+    return jsonify({'ok': True})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Agenda
+# ══════════════════════════════════════════════════════════════════════
+@app.route('/api/agenda')
+@login_required
+def agenda():
+    d = parse_date(request.args.get('data'), date.today())
+    c = cfg()
+    slot_min = c.get('slot_min') or 30
+    horarios = c.get('horarios') or {}
+    dia_cfg = horarios.get(str(js_weekday(d)))
+
+    # barbeiro só vê a própria agenda
+    if session.get('role') == 'barbeiro' and session.get('profissional_id'):
+        profs = q_all("SELECT * FROM profissionais WHERE ativo AND id=%s", (session['profissional_id'],))
+    else:
+        profs = q_all("SELECT * FROM profissionais WHERE ativo ORDER BY nome")
+
+    agendamentos = q_all("""
+        SELECT a.*, c.nome AS cliente_nome, c.tipo AS cliente_tipo, s.nome AS servico_nome, s.preco
+        FROM agendamentos a
+        LEFT JOIN clientes c ON c.id=a.cliente_id
+        LEFT JOIN servicos s ON s.id=a.servico_id
+        WHERE a.data=%s AND a.status NOT IN ('cancelado')
+    """, (d,))
+    smap = {s['id']: s['nome'] for s in q_all("SELECT id, nome FROM servicos")}
+    for a in agendamentos:
+        ids = a.get('servicos_ids') or ([a['servico_id']] if a.get('servico_id') else [])
+        a['servicos_nomes'] = [smap[i] for i in ids if i in smap]
+    bloqueios = q_all("SELECT * FROM bloqueios WHERE data=%s", (d,))
+
+    return jsonify({'ok': True, 'data': d.isoformat(), 'slot_min': slot_min,
+                    'horario_dia': dia_cfg, 'profissionais': profs,
+                    'agendamentos': agendamentos, 'bloqueios': bloqueios})
+
+
+@app.route('/api/agendamentos', methods=['POST'])
+@login_required
+def agend_create():
+    d = request.get_json() or {}
+    prof = d.get('profissional_id')
+    # aceita lista de serviços (vários) ou um único (compat)
+    serv_ids = d.get('servicos_ids') or ([d['servico_id']] if d.get('servico_id') else [])
+    serv_ids = [int(x) for x in serv_ids if x]
+    data = parse_date(d.get('data'))
+    hora = d.get('hora_inicio')  # 'HH:MM'
+    if not (prof and data and hora):
+        return jsonify({'ok': False, 'error': 'Profissional, data e hora obrigatórios'}), 400
+    slot_min = (cfg().get('slot_min') or 30)
+    dur = 30
+    if serv_ids:
+        rows = q_all("SELECT id, duracao_min FROM servicos WHERE id = ANY(%s)", (serv_ids,))
+        dur = sum((r['duracao_min'] or 30) for r in rows) or 30
+    slots = max(1, math.ceil(dur / slot_min))
+    principal = serv_ids[0] if serv_ids else None
+    conflito = scalar("""SELECT COUNT(*) FROM agendamentos WHERE profissional_id=%s AND data=%s
+                         AND hora_inicio=%s AND status NOT IN ('cancelado')""", (prof, data, hora))
+    if conflito:
+        return jsonify({'ok': False, 'error': 'Já existe agendamento nesse horário'}), 409
+    row = execute("""INSERT INTO agendamentos (profissional_id, cliente_id, servico_id, servicos_ids,
+                     data, hora_inicio, duracao_slots, origem, observacao, criado_por)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,'agenda',%s,%s) RETURNING id""",
+                  (prof, d.get('cliente_id') or None, principal, Json(serv_ids), data, hora, slots,
+                   d.get('observacao'), session['user_id']), returning=True)
+    return jsonify({'ok': True, 'id': row['id']})
+
+
+@app.route('/api/agendamentos/<int:aid>', methods=['PUT'])
+@login_required
+def agend_update(aid):
+    d = request.get_json() or {}
+    if d.get('status') in ('agendado', 'atendido', 'cancelado', 'falta'):
+        execute("UPDATE agendamentos SET status=%s WHERE id=%s", (d['status'], aid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/agendamentos/<int:aid>', methods=['DELETE'])
+@login_required
+def agend_delete(aid):
+    execute("UPDATE agendamentos SET status='cancelado' WHERE id=%s", (aid,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/bloqueios', methods=['POST'])
+@login_required
+def bloqueio_create():
+    d = request.get_json() or {}
+    data = parse_date(d.get('data'))
+    if not (d.get('profissional_id') and data and d.get('hora_inicio') and d.get('hora_fim')):
+        return jsonify({'ok': False, 'error': 'Dados incompletos'}), 400
+    execute("""INSERT INTO bloqueios (profissional_id, data, hora_inicio, hora_fim, motivo)
+               VALUES (%s,%s,%s,%s,%s)""",
+            (d['profissional_id'], data, d['hora_inicio'], d['hora_fim'], d.get('motivo')))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/bloqueios/<int:bid>', methods=['DELETE'])
+@login_required
+def bloqueio_delete(bid):
+    execute("DELETE FROM bloqueios WHERE id=%s", (bid,))
+    return jsonify({'ok': True})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Comanda (o pivô)
+# ══════════════════════════════════════════════════════════════════════
+def _recalc_comanda(comanda_id):
+    total = scalar("SELECT COALESCE(SUM(subtotal),0) FROM comanda_itens WHERE comanda_id=%s", (comanda_id,)) or 0
+    execute("UPDATE comandas SET valor_total=%s WHERE id=%s", (total, comanda_id))
+    return round(total, 2)
+
+
+def _add_servico_item(com, servico_id, executor, qtd=1):
+    """Insere um item de serviço na comanda, aplicando cobertura do plano. Reuso."""
+    s = q_one("SELECT * FROM servicos WHERE id=%s", (servico_id,))
+    if not s:
+        return False
+    coberto, assin_id = cobertura_plano(com['cliente_id'], s['id'], date.today())
+    preco_unit = 0 if coberto else float(s['preco'])
+    execute("""INSERT INTO comanda_itens (comanda_id, tipo, ref_id, descricao, profissional_id,
+               preco_unit, qtd, subtotal, preco_tabela, coberto_plano, assinatura_id)
+               VALUES (%s,'servico',%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (com['id'], s['id'], s['nome'], executor, preco_unit, qtd, preco_unit * qtd,
+             float(s['preco']), coberto, assin_id))
+    return True
+
+
+@app.route('/api/comandas', methods=['POST'])
+@login_required
+def comanda_abrir():
+    """Abre comanda (de um agendamento ou walk-in)."""
+    d = request.get_json() or {}
+    agendamento_id = d.get('agendamento_id') or None
+    cliente_id = d.get('cliente_id') or None
+    prof = d.get('profissional_id') or None
+    if agendamento_id:
+        ag = q_one("SELECT * FROM agendamentos WHERE id=%s", (agendamento_id,))
+        if ag:
+            cliente_id = cliente_id or ag['cliente_id']
+            prof = prof or ag['profissional_id']
+    if not prof:
+        return jsonify({'ok': False, 'error': 'Profissional obrigatório'}), 400
+    row = execute("""INSERT INTO comandas (cliente_id, profissional_id, agendamento_id, criado_por)
+                     VALUES (%s,%s,%s,%s) RETURNING id""",
+                  (cliente_id, prof, agendamento_id, session['user_id']), returning=True)
+    cid = row['id']
+    # Pré-carrega os serviços que estavam no agendamento (vários serviços)
+    if agendamento_id:
+        ag = q_one("SELECT servico_id, servicos_ids FROM agendamentos WHERE id=%s", (agendamento_id,))
+        ids = (ag.get('servicos_ids') if ag else None) or ([] if not (ag and ag.get('servico_id')) else [ag['servico_id']])
+        com = {'id': cid, 'cliente_id': cliente_id}
+        for sid in ids:
+            _add_servico_item(com, sid, prof)
+        if ids:
+            _recalc_comanda(cid)
+    return jsonify({'ok': True, 'id': cid})
+
+
+@app.route('/api/comandas/aberta')
+@login_required
+def comanda_aberta():
+    """Retorna a comanda aberta (por id ou por agendamento) com itens."""
+    cid = request.args.get('id')
+    if cid:
+        com = q_one("""SELECT co.*, c.nome AS cliente_nome, p.nome AS prof_nome
+                       FROM comandas co LEFT JOIN clientes c ON c.id=co.cliente_id
+                       LEFT JOIN profissionais p ON p.id=co.profissional_id WHERE co.id=%s""", (cid,))
+    else:
+        return jsonify({'ok': False, 'error': 'Informe o id'}), 400
+    if not com:
+        return jsonify({'ok': False, 'error': 'Comanda não encontrada'}), 404
+    itens = q_all("SELECT * FROM comanda_itens WHERE comanda_id=%s ORDER BY id", (com['id'],))
+    return jsonify({'ok': True, 'comanda': com, 'itens': itens})
+
+
+@app.route('/api/comandas/abertas')
+@login_required
+def comandas_abertas():
+    rows = q_all("""SELECT co.*, c.nome AS cliente_nome, p.nome AS prof_nome
+                    FROM comandas co LEFT JOIN clientes c ON c.id=co.cliente_id
+                    LEFT JOIN profissionais p ON p.id=co.profissional_id
+                    WHERE co.status='aberta' ORDER BY co.aberta_em DESC""")
+    return jsonify({'ok': True, 'rows': rows})
+
+
+@app.route('/api/comandas/<int:cid>/itens', methods=['POST'])
+@login_required
+def comanda_add_item(cid):
+    d = request.get_json() or {}
+    com = q_one("SELECT * FROM comandas WHERE id=%s", (cid,))
+    if not com or com['status'] != 'aberta':
+        return jsonify({'ok': False, 'error': 'Comanda inválida'}), 400
+    tipo = d.get('tipo')
+    ref_id = d.get('ref_id')
+    qtd = max(1, int(d.get('qtd') or 1))
+    hoje = date.today()
+
+    if tipo == 'servico':
+        executor = d.get('profissional_id') or com['profissional_id']
+        if not _add_servico_item(com, ref_id, executor, qtd):
+            return jsonify({'ok': False, 'error': 'Serviço inválido'}), 400
+    elif tipo == 'produto':
+        p = q_one("SELECT * FROM produtos WHERE id=%s", (ref_id,))
+        if not p:
+            return jsonify({'ok': False, 'error': 'Produto inválido'}), 400
+        preco_unit = float(p['preco'])
+        execute("""INSERT INTO comanda_itens (comanda_id, tipo, ref_id, descricao, profissional_id,
+                   preco_unit, qtd, subtotal, coberto_plano)
+                   VALUES (%s,'produto',%s,%s,%s,%s,%s,%s,false)""",
+                (cid, p['id'], p['nome'], com['profissional_id'], preco_unit, qtd, preco_unit * qtd))
+    else:
+        return jsonify({'ok': False, 'error': 'Tipo inválido'}), 400
+
+    total = _recalc_comanda(cid)
+    return jsonify({'ok': True, 'valor_total': total})
+
+
+@app.route('/api/comandas/itens/<int:item_id>', methods=['DELETE'])
+@login_required
+def comanda_del_item(item_id):
+    item = q_one("SELECT comanda_id FROM comanda_itens WHERE id=%s", (item_id,))
+    if not item:
+        return jsonify({'ok': False, 'error': 'Item não encontrado'}), 404
+    execute("DELETE FROM comanda_itens WHERE id=%s", (item_id,))
+    total = _recalc_comanda(item['comanda_id'])
+    return jsonify({'ok': True, 'valor_total': total})
+
+
+@app.route('/api/comandas/<int:cid>/fechar', methods=['POST'])
+@login_required
+def comanda_fechar(cid):
+    d = request.get_json() or {}
+    com = q_one("SELECT * FROM comandas WHERE id=%s", (cid,))
+    if not com or com['status'] != 'aberta':
+        return jsonify({'ok': False, 'error': 'Comanda inválida'}), 400
+    forma = d.get('forma_pagamento')
+    total = _recalc_comanda(cid)
+    execute("UPDATE comandas SET status='fechada', forma_pagamento=%s, fechada_em=NOW() WHERE id=%s", (forma, cid))
+    if total > 0:
+        execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, forma_pagamento, status, criado_por)
+                   VALUES ('receita','comanda',%s,%s,%s,%s,'pago',%s)""",
+                (cid, f"Comanda #{cid}", total, forma, session['user_id']))
+    if com['agendamento_id']:
+        execute("UPDATE agendamentos SET status='atendido' WHERE id=%s", (com['agendamento_id'],))
+    return jsonify({'ok': True, 'valor_total': total})
+
+
+@app.route('/api/comandas/<int:cid>/cancelar', methods=['POST'])
+@login_required
+def comanda_cancelar(cid):
+    execute("UPDATE comandas SET status='cancelada' WHERE id=%s AND status='aberta'", (cid,))
+    return jsonify({'ok': True})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Assinaturas
+# ══════════════════════════════════════════════════════════════════════
+@app.route('/api/assinaturas', methods=['GET'])
+@login_required
+def assin_list():
+    rows = q_all("""SELECT a.*, c.nome AS cliente_nome, c.telefone, pl.nome AS plano_nome, pl.valor_mensal
+                    FROM assinaturas a JOIN clientes c ON c.id=a.cliente_id
+                    JOIN planos pl ON pl.id=a.plano_id
+                    WHERE a.status<>'cancelada' ORDER BY c.nome""")
+    return jsonify({'ok': True, 'rows': rows})
+
+
+@app.route('/api/assinaturas', methods=['POST'])
+@login_required
+def assin_create():
+    d = request.get_json() or {}
+    if not (d.get('cliente_id') and d.get('plano_id')):
+        return jsonify({'ok': False, 'error': 'Cliente e plano obrigatórios'}), 400
+    venc = int(d.get('dia_vencimento') or 10)
+    if venc not in (10, 30):
+        venc = 10
+    row = execute("""INSERT INTO assinaturas (cliente_id, plano_id, dia_vencimento)
+                     VALUES (%s,%s,%s) RETURNING id""", (d['cliente_id'], d['plano_id'], venc), returning=True)
+    return jsonify({'ok': True, 'id': row['id']})
+
+
+@app.route('/api/assinaturas/<int:aid>', methods=['PUT'])
+@login_required
+def assin_update(aid):
+    d = request.get_json() or {}
+    if d.get('status') in ('ativa', 'pausada', 'cancelada'):
+        fim = ", data_fim=CURRENT_DATE" if d['status'] == 'cancelada' else ""
+        execute(f"UPDATE assinaturas SET status=%s{fim} WHERE id=%s", (d['status'], aid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/assinaturas/gerar-cobrancas', methods=['POST'])
+@login_required
+def assin_gerar_cobrancas():
+    """Gera a cobrança mensal (movimento previsto, venc 10/30) das assinaturas ativas."""
+    d = request.get_json() or {}
+    comp = d.get('competencia')  # 'YYYY-MM'
+    hoje = date.today()
+    try:
+        ano, mes = (int(comp[:4]), int(comp[5:7])) if comp else (hoje.year, hoje.month)
+    except (ValueError, IndexError):
+        return jsonify({'ok': False, 'error': 'Competência inválida'}), 400
+    import calendar
+    ult = calendar.monthrange(ano, mes)[1]
+    ativas = q_all("""SELECT a.*, pl.valor_mensal, c.nome AS cliente_nome FROM assinaturas a
+                      JOIN planos pl ON pl.id=a.plano_id JOIN clientes c ON c.id=a.cliente_id
+                      WHERE a.status='ativa'""")
+    gerados = 0
+    for a in ativas:
+        dia = min(a['dia_vencimento'], ult)
+        venc = date(ano, mes, dia)
+        existe = scalar("""SELECT COUNT(*) FROM movimentos WHERE origem='assinatura' AND ref_id=%s
+                           AND date_trunc('month', vencimento)=date_trunc('month', %s::date)""", (a['id'], venc))
+        if existe:
+            continue
+        execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, data, vencimento, status, criado_por)
+                   VALUES ('receita','assinatura',%s,%s,%s,%s,%s,'previsto',%s)""",
+                (a['id'], f"Mensalidade — {a['cliente_nome']}", a['valor_mensal'], venc, venc, session['user_id']))
+        gerados += 1
+    return jsonify({'ok': True, 'gerados': gerados})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Caixa / Movimentos / Relatórios
+# ══════════════════════════════════════════════════════════════════════
+@app.route('/api/movimentos', methods=['GET'])
+@login_required
+def mov_list():
+    de = parse_date(request.args.get('de'), date.today())
+    ate = parse_date(request.args.get('ate'), date.today())
+    rows = q_all("""SELECT * FROM movimentos WHERE data>=%s AND data<=%s ORDER BY id DESC LIMIT 500""", (de, ate))
+    return jsonify({'ok': True, 'rows': rows})
+
+
+@app.route('/api/movimentos', methods=['POST'])
+@login_required
+def mov_create():
+    d = request.get_json() or {}
+    if d.get('tipo') not in ('receita', 'despesa') or not (d.get('descricao') or '').strip():
+        return jsonify({'ok': False, 'error': 'Tipo e descrição obrigatórios'}), 400
+    execute("""INSERT INTO movimentos (tipo, origem, descricao, valor, forma_pagamento, data, status, criado_por)
+               VALUES (%s,'manual',%s,%s,%s,%s,'pago',%s)""",
+            (d['tipo'], d['descricao'].strip(), d.get('valor') or 0, d.get('forma_pagamento'),
+             parse_date(d.get('data'), date.today()), session['user_id']))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/movimentos/<int:mid>/pagar', methods=['POST'])
+@login_required
+def mov_pagar(mid):
+    d = request.get_json() or {}
+    execute("UPDATE movimentos SET status='pago', forma_pagamento=COALESCE(%s,forma_pagamento), data=CURRENT_DATE WHERE id=%s",
+            (d.get('forma_pagamento'), mid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/caixa/fechamento')
+@login_required
+def caixa_fechamento():
+    d = parse_date(request.args.get('data'), date.today())
+    por_forma = q_all("""SELECT COALESCE(forma_pagamento,'—') AS forma, COALESCE(SUM(valor),0) AS total, COUNT(*) AS qtd
+                         FROM movimentos WHERE tipo='receita' AND status='pago' AND data=%s
+                         GROUP BY forma_pagamento ORDER BY total DESC""", (d,))
+    total_receita = scalar("SELECT COALESCE(SUM(valor),0) FROM movimentos WHERE tipo='receita' AND status='pago' AND data=%s", (d,)) or 0
+    total_despesa = scalar("SELECT COALESCE(SUM(valor),0) FROM movimentos WHERE tipo='despesa' AND status='pago' AND data=%s", (d,)) or 0
+    atendimentos = scalar("SELECT COUNT(*) FROM comandas WHERE status='fechada' AND fechada_em::date=%s", (d,)) or 0
+    return jsonify({'ok': True, 'data': d.isoformat(), 'por_forma': por_forma,
+                    'total_receita': round(total_receita, 2), 'total_despesa': round(total_despesa, 2),
+                    'saldo': round(total_receita - total_despesa, 2), 'atendimentos': atendimentos})
+
+
+@app.route('/api/relatorios/comissao')
+@login_required
+def rel_comissao():
+    """Comissão por barbeiro no período:
+       - AVULSO: 45% (comissao_pct do barbeiro) sobre o valor dos serviços não cobertos.
+       - ASSINANTE (POOL): bolo = 45% (config.comissao_padrao) da arrecadação dos planos paga no
+         período, rateado entre os barbeiros pela fatia de atendimentos cobertos de cada um."""
+    de = parse_date(request.args.get('de'), date.today().replace(day=1))
+    ate = parse_date(request.args.get('ate'), date.today())
+
+    pool_pct = float(cfg().get('comissao_padrao') or 45)
+    plan_revenue = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
+        WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
+    pool = plan_revenue * pool_pct / 100.0
+
+    avulso_rows = q_all("""
+        SELECT ci.profissional_id, pr.nome AS prof_nome, pr.comissao_pct,
+               COALESCE(SUM(ci.subtotal),0) AS base
+        FROM comanda_itens ci JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        LEFT JOIN profissionais pr ON pr.id=ci.profissional_id
+        WHERE ci.tipo='servico' AND ci.coberto_plano=false AND c.fechada_em::date BETWEEN %s AND %s
+        GROUP BY ci.profissional_id, pr.nome, pr.comissao_pct
+    """, (de, ate))
+    atend_rows = q_all("""
+        SELECT ci.profissional_id, pr.nome AS prof_nome, COUNT(*) AS atend
+        FROM comanda_itens ci JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        LEFT JOIN profissionais pr ON pr.id=ci.profissional_id
+        WHERE ci.tipo='servico' AND ci.coberto_plano=true AND c.fechada_em::date BETWEEN %s AND %s
+        GROUP BY ci.profissional_id, pr.nome
+    """, (de, ate))
+
+    total_atend = sum(r['atend'] for r in atend_rows) or 0
+    barb = {}
+    for r in avulso_rows:
+        if r['profissional_id'] is None:
+            continue
+        b = barb.setdefault(r['profissional_id'], {'profissional': r['prof_nome'], 'avulso': 0.0, 'atend': 0})
+        b['avulso'] = float(r['base']) * float(r['comissao_pct'] or 0) / 100.0
+    for r in atend_rows:
+        if r['profissional_id'] is None:
+            continue
+        b = barb.setdefault(r['profissional_id'], {'profissional': r['prof_nome'], 'avulso': 0.0, 'atend': 0})
+        b['atend'] = r['atend']
+
+    rows = []
+    for b in barb.values():
+        share = (b['atend'] / total_atend) if total_atend else 0
+        pool_share = pool * share
+        rows.append({'profissional': b['profissional'], 'avulso': round(b['avulso'], 2),
+                     'atend': b['atend'], 'participacao_pct': round(share * 100, 1),
+                     'pool_share': round(pool_share, 2), 'total': round(b['avulso'] + pool_share, 2)})
+    rows.sort(key=lambda x: x['total'], reverse=True)
+    return jsonify({'ok': True, 'de': de.isoformat(), 'ate': ate.isoformat(),
+                    'plan_revenue': round(plan_revenue, 2), 'pool': round(pool, 2),
+                    'pool_pct': pool_pct, 'total_atend': total_atend, 'rows': rows,
+                    'total': round(sum(r['total'] for r in rows), 2)})
+
+
+@app.route('/api/relatorios/minha-comissao')
+@login_required
+def rel_minha_comissao():
+    """Comissão do barbeiro logado na quinzena atual (avulso + fatia do bolo dos planos)."""
+    pid = session.get('profissional_id')
+    if not pid:
+        return jsonify({'ok': True, 'comissao': 0, 'atendimentos': 0})
+    hoje = date.today()
+    de = hoje.replace(day=1) if hoje.day <= 15 else hoje.replace(day=16)
+
+    pct = float(scalar("SELECT comissao_pct FROM profissionais WHERE id=%s", (pid,)) or 0)
+    avulso_base = scalar("""SELECT COALESCE(SUM(ci.subtotal),0) FROM comanda_itens ci
+        JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        WHERE ci.tipo='servico' AND ci.coberto_plano=false AND ci.profissional_id=%s
+          AND c.fechada_em::date BETWEEN %s AND %s""", (pid, de, hoje)) or 0
+    avulso = avulso_base * pct / 100.0
+
+    pool_pct = float(cfg().get('comissao_padrao') or 45)
+    plan_revenue = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
+        WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, hoje)) or 0
+    pool = plan_revenue * pool_pct / 100.0
+    meu_atend = scalar("""SELECT COUNT(*) FROM comanda_itens ci
+        JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        WHERE ci.tipo='servico' AND ci.coberto_plano=true AND ci.profissional_id=%s
+          AND c.fechada_em::date BETWEEN %s AND %s""", (pid, de, hoje)) or 0
+    total_atend = scalar("""SELECT COUNT(*) FROM comanda_itens ci
+        JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        WHERE ci.tipo='servico' AND ci.coberto_plano=true AND c.fechada_em::date BETWEEN %s AND %s""",
+        (de, hoje)) or 0
+    pool_share = pool * (meu_atend / total_atend) if total_atend else 0
+
+    return jsonify({'ok': True, 'comissao': round(avulso + pool_share, 2),
+                    'avulso': round(avulso, 2), 'pool_share': round(pool_share, 2),
+                    'atendimentos': meu_atend, 'periodo': f"{de.isoformat()} a {hoje.isoformat()}"})
+
+
+if __name__ == '__main__':
+    porta = int(os.getenv('PORT', '5000'))
+    if os.getenv('FLASK_ENV') == 'development' or os.getenv('DEV'):
+        app.run(host='0.0.0.0', port=porta, debug=True)
+    else:
+        from waitress import serve
+        print(f"[JOGA Barbearia] http://0.0.0.0:{porta}")
+        serve(app, host='0.0.0.0', port=porta, threads=8)

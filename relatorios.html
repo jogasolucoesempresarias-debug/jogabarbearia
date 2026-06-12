@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Relatórios</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Relatórios</h1><div class="sub">Comissão por barbeiro</div></div></div></div>
+
+  <div class="card">
+    <div class="field"><label>Quinzena</label>
+      <select id="quinzena" onchange="aplicarQuinzena()"></select></div>
+    <div class="filters">
+      <div class="field"><label>De</label><input type="date" id="de" onchange="carregar()"></div>
+      <div class="field"><label>Até</label><input type="date" id="ate" onchange="carregar()"></div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card kpi"><div class="label">Arrecadação dos planos</div><div class="value" id="arrecad">—</div></div>
+    <div class="card kpi"><div class="label">Bolo da equipe (45%)</div><div class="value pos" id="bolo">—</div></div>
+  </div>
+  <div class="card kpi"><div class="label">Total de comissões (avulso + bolo)</div><div class="value" id="total">—</div></div>
+  <div class="section-title">Por barbeiro</div>
+  <div class="list" id="lista"><div class="empty">Carregando…</div></div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+function quinzenas() {
+  const hj = new Date(); const out = [];
+  for (let i=0;i<4;i++) {
+    const base = new Date(hj.getFullYear(), hj.getMonth()-Math.floor(i/2), 1);
+    const seg = i%2; // 0 = 1-15 atual, alterna
+  }
+  // gera as últimas 4 quinzenas simples
+  const res = [];
+  let y = hj.getFullYear(), m = hj.getMonth();
+  for (let k=0;k<4;k++) {
+    const ult = new Date(y, m+1, 0).getDate();
+    res.push({ label:`16–${ult}/${String(m+1).padStart(2,'0')}`, de:`${y}-${String(m+1).padStart(2,'0')}-16`, ate:`${y}-${String(m+1).padStart(2,'0')}-${ult}` });
+    res.push({ label:`01–15/${String(m+1).padStart(2,'0')}`, de:`${y}-${String(m+1).padStart(2,'0')}-01`, ate:`${y}-${String(m+1).padStart(2,'0')}-15` });
+    m--; if (m<0){m=11;y--;}
+  }
+  return res;
+}
+function aplicarQuinzena() {
+  const v = document.getElementById('quinzena').value;
+  if (!v) return; const [de,ate] = v.split('|');
+  document.getElementById('de').value = de; document.getElementById('ate').value = ate; carregar();
+}
+async function carregar() {
+  const de = document.getElementById('de').value, ate = document.getElementById('ate').value;
+  try {
+    const j = await api(`/api/relatorios/comissao?de=${de}&ate=${ate}`);
+    document.getElementById('arrecad').textContent = money(j.plan_revenue);
+    document.getElementById('bolo').textContent = money(j.pool);
+    document.getElementById('total').textContent = money(j.total);
+    document.getElementById('lista').innerHTML = j.rows.length
+      ? j.rows.map(r=>`<div class="row-item"><div>
+          <div class="ri-main">${escapeHtml(r.profissional||'—')}</div>
+          <div class="ri-sub">avulso ${money(r.avulso)} · bolo ${money(r.pool_share)} <span class="muted">(${r.participacao_pct}% · ${r.atend} atend.)</span></div></div>
+          <div class="ri-right" style="color:var(--green)">${money(r.total)}</div></div>`).join('')
+      : '<div class="empty">Nenhum atendimento no período.</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+const qs = quinzenas();
+document.getElementById('quinzena').innerHTML = qs.map(q=>`<option value="${q.de}|${q.ate}">${q.label}</option>`).join('');
+// quinzena atual = primeira que contém hoje
+const hj = new Date().getDate();
+document.getElementById('quinzena').selectedIndex = hj<=15 ? 1 : 0;
+aplicarQuinzena();
+renderShell('/mais');
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

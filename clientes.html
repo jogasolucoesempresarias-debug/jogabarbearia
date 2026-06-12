@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Clientes</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Clientes</h1><div class="sub" id="sub">—</div></div></div></div>
+  <div class="field"><input type="text" id="busca" placeholder="🔎 Buscar por nome ou telefone" oninput="carregar(this.value)"></div>
+  <div class="list" id="lista"><div class="empty">Carregando…</div></div>
+</div>
+<button class="btn btn-primary btn-fab" onclick="abrirNovo()">+</button>
+
+<div class="modal-bg" id="m">
+  <div class="modal">
+    <h2 id="m-titulo">Novo cliente</h2>
+    <input type="hidden" id="c-id">
+    <div class="field"><label>Nome *</label><input type="text" id="c-nome"></div>
+    <div class="field"><label>Telefone</label><input type="tel" id="c-tel" inputmode="tel"></div>
+    <div class="field"><label>Tipo</label><select id="c-tipo" onchange="toggleFixo()"><option value="universal">Universal (qualquer barbeiro)</option><option value="fixo">Fixo (barbeiro preferido)</option></select></div>
+    <div class="field" id="c-fixo-wrap" style="display:none"><label>Barbeiro preferido</label><select id="c-fixo"></select></div>
+    <div class="field"><label>Observações</label><textarea id="c-obs" rows="2"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('m')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvar()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+let PROFS = [];
+async function carregar(q='') {
+  try {
+    const { rows } = await api('/api/clientes' + (q?('?q='+encodeURIComponent(q)):''));
+    document.getElementById('sub').textContent = rows.length + ' cliente(s)';
+    const cont = document.getElementById('lista');
+    if (!rows.length) { cont.innerHTML = '<div class="empty">Nenhum cliente.</div>'; return; }
+    cont.innerHTML = rows.map(c => `
+      <div class="row-item" onclick="editar(${c.id})">
+        <div><div class="ri-main">${escapeHtml(c.nome)} ${c.tipo==='fixo'?'<span class="badge plano">fixo</span>':''}</div>
+          <div class="ri-sub">${escapeHtml(c.telefone||'sem telefone')} ${c.prof_nome?('· '+escapeHtml(c.prof_nome)):''}</div></div>
+        <div class="muted">›</div>
+      </div>`).join('');
+  } catch (e) { toast(e.message, 'err'); }
+}
+function toggleFixo() { document.getElementById('c-fixo-wrap').style.display = document.getElementById('c-tipo').value==='fixo'?'block':'none'; }
+function abrirNovo() {
+  document.getElementById('m-titulo').textContent = 'Novo cliente';
+  ['c-id','c-nome','c-tel','c-obs'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('c-tipo').value='universal'; toggleFixo();
+  document.getElementById('c-fixo').innerHTML = '<option value="">—</option>'+PROFS.map(p=>`<option value="${p.id}">${escapeHtml(p.nome)}</option>`).join('');
+  openModal('m');
+}
+async function editar(id) {
+  try {
+    const j = await api('/api/clientes/'+id); const c = j.cliente;
+    document.getElementById('m-titulo').textContent = 'Editar cliente';
+    document.getElementById('c-id').value = c.id;
+    document.getElementById('c-nome').value = c.nome;
+    document.getElementById('c-tel').value = c.telefone||'';
+    document.getElementById('c-tipo').value = c.tipo; toggleFixo();
+    document.getElementById('c-fixo').innerHTML = '<option value="">—</option>'+PROFS.map(p=>`<option value="${p.id}" ${p.id==c.profissional_fixo_id?'selected':''}>${escapeHtml(p.nome)}</option>`).join('');
+    document.getElementById('c-obs').value = c.observacoes||'';
+    openModal('m');
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function salvar() {
+  const id = document.getElementById('c-id').value;
+  const body = {
+    nome: document.getElementById('c-nome').value, telefone: document.getElementById('c-tel').value,
+    tipo: document.getElementById('c-tipo').value, profissional_fixo_id: document.getElementById('c-fixo').value||null,
+    observacoes: document.getElementById('c-obs').value,
+  };
+  if (!body.nome.trim()) return toast('Informe o nome.', 'err');
+  try {
+    if (id) await api('/api/clientes/'+id, { method:'PUT', body });
+    else await api('/api/clientes', { method:'POST', body });
+    toast('Salvo!', 'ok'); closeModal('m'); carregar(document.getElementById('busca').value);
+  } catch (e) { toast(e.message, 'err'); }
+}
+(async () => { await renderShell('/clientes'); PROFS = (await api('/api/profissionais')).rows; carregar(); })();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

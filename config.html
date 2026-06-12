@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Configurações</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Configurações</h1><div class="sub">Cadastros e políticas</div></div></div></div>
+  <div class="tabs">
+    <button class="active" data-t="serv" onclick="tab('serv',this)">Serviços</button>
+    <button data-t="prod" onclick="tab('prod',this)">Produtos</button>
+    <button data-t="prof" onclick="tab('prof',this)">Barbeiros</button>
+    <button data-t="plano" onclick="tab('plano',this)">Planos</button>
+    <button data-t="geral" onclick="tab('geral',this)">Geral</button>
+  </div>
+  <div id="painel"><div class="empty">Carregando…</div></div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+let ATUAL='serv', SERVICOS=[], CFG={};
+function tab(t,btn){ ATUAL=t; document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); render(); }
+
+async function render() {
+  const p = document.getElementById('painel');
+  if (ATUAL==='serv') {
+    const { rows } = await api('/api/servicos');
+    p.innerHTML = formAdd('Novo serviço',[['s-nome','Nome','text'],['s-preco','Preço','number'],['s-dur','Duração (min)','number']],'addServ()') +
+      '<div class="list">'+rows.map(s=>`<div class="row-item"><div><div class="ri-main">${escapeHtml(s.nome)}</div><div class="ri-sub">${s.duracao_min}min</div></div><div style="display:flex;gap:8px;align-items:center"><div class="ri-right">${money(s.preco)}</div><button class="btn btn-sm btn-danger" onclick="delItem('servicos',${s.id})">×</button></div></div>`).join('')+'</div>';
+  } else if (ATUAL==='prod') {
+    const { rows } = await api('/api/produtos');
+    p.innerHTML = formAdd('Novo produto',[['p-nome','Nome','text'],['p-preco','Preço','number']],'addProd()') +
+      '<div class="list">'+rows.map(s=>`<div class="row-item"><div class="ri-main">${escapeHtml(s.nome)}</div><div style="display:flex;gap:8px;align-items:center"><div class="ri-right">${money(s.preco)}</div><button class="btn btn-sm btn-danger" onclick="delItem('produtos',${s.id})">×</button></div></div>`).join('')+'</div>';
+  } else if (ATUAL==='prof') {
+    const { rows } = await api('/api/profissionais');
+    p.innerHTML = formAdd('Novo barbeiro',[['b-nome','Nome','text'],['b-com','Comissão %','number']],'addProf()') +
+      '<div class="list">'+rows.map(s=>`<div class="row-item"><div><div class="ri-main"><span class="dot" style="background:${s.cor_agenda}"></span>${escapeHtml(s.nome)}</div></div><div style="display:flex;gap:8px;align-items:center"><div class="ri-right">${s.comissao_pct}%</div><button class="btn btn-sm btn-danger" onclick="delItem('profissionais',${s.id})">×</button></div></div>`).join('')+'</div>';
+  } else if (ATUAL==='plano') {
+    SERVICOS = (await api('/api/servicos')).rows;
+    const { rows } = await api('/api/planos');
+    p.innerHTML = `<div class="card"><button class="btn btn-primary btn-block" onclick="novoPlano()">+ Novo plano</button></div>` +
+      '<div class="list">'+rows.map(pl=>`<div class="row-item" onclick='editarPlano(${JSON.stringify(pl)})'><div><div class="ri-main">${escapeHtml(pl.nome)}</div><div class="ri-sub">${money(pl.valor_mensal)}/mês · ${(pl.servicos||[]).map(x=>x.nome).join(', ')||'sem serviço'}</div></div><div class="muted">›</div></div>`).join('')+'</div>';
+  } else {
+    CFG = (await api('/api/config')).config;
+    const dias = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+    p.innerHTML = `<div class="card">
+      <div class="field"><label>Nome da barbearia (marca)</label><input id="g-nome" value="${escapeHtml(CFG.marca_nome||'')}"></div>
+      <div class="field"><label>Cor da marca</label><input type="color" id="g-cor" value="${CFG.marca_cor||'#38bdf8'}" style="height:48px"></div>
+      <div class="field"><label>Formas de pagamento (separadas por vírgula)</label><input id="g-formas" value="${(CFG.formas_pagamento||[]).join(', ')}"></div>
+      <button class="btn btn-primary btn-block" onclick="salvarGeral()">Salvar geral</button>
+    </div>
+    <div class="section-title">Horário de funcionamento</div>
+    <div class="card">${dias.map((d,i)=>{const h=(CFG.horarios||{})[String(i)];return `<div class="filters"><div style="width:42px;align-self:center;font-weight:700">${d}</div><div class="field"><label>Abre</label><input type="time" id="h-${i}-a" value="${h?h.abre:''}"></div><div class="field"><label>Fecha</label><input type="time" id="h-${i}-f" value="${h?h.fecha:''}"></div></div>`;}).join('')}
+      <div class="hint" style="margin-bottom:10px">Deixe vazio = fechado nesse dia.</div>
+      <button class="btn btn-primary btn-block" onclick="salvarHorarios()">Salvar horários</button>
+    </div>`;
+  }
+}
+function formAdd(titulo, campos, onclick) {
+  return `<div class="card"><div class="section-title" style="margin-top:0">${titulo}</div>${campos.map(c=>`<div class="field"><label>${c[1]}</label><input id="${c[0]}" type="${c[2]}" ${c[2]==='number'?'inputmode="decimal"':''}></div>`).join('')}<button class="btn btn-primary btn-block" onclick="${onclick}">+ Adicionar</button></div>`;
+}
+const V=id=>document.getElementById(id).value;
+async function addServ(){ try{ await api('/api/servicos',{method:'POST',body:{nome:V('s-nome'),preco:V('s-preco'),duracao_min:V('s-dur')||30}}); toast('Criado!','ok'); render(); }catch(e){toast(e.message,'err');} }
+async function addProd(){ try{ await api('/api/produtos',{method:'POST',body:{nome:V('p-nome'),preco:V('p-preco')}}); toast('Criado!','ok'); render(); }catch(e){toast(e.message,'err');} }
+async function addProf(){ try{ await api('/api/profissionais',{method:'POST',body:{nome:V('b-nome'),comissao_pct:V('b-com')||45}}); toast('Criado!','ok'); render(); }catch(e){toast(e.message,'err');} }
+async function delItem(rec,id){ if(!confirm('Excluir?'))return; try{ await api('/api/'+rec+'/'+id,{method:'DELETE'}); toast('Excluído.','ok'); render(); }catch(e){toast(e.message,'err');} }
+
+// Planos
+let editId=null;
+function novoPlano(){ editId=null; abrirPlano({nome:'',valor_mensal:0,dias_inclusos:[1,2,3],comissao_assinante_regra:'tabela',servicos:[]}); }
+function editarPlano(pl){ editId=pl.id; abrirPlano(pl); }
+function abrirPlano(pl){
+  const dias=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const inc = pl.dias_inclusos||[];
+  const servIds = (pl.servicos||[]).map(s=>s.id);
+  const p = document.getElementById('painel');
+  p.innerHTML = `<div class="card">
+    <h2 style="margin-bottom:14px">${editId?'Editar':'Novo'} plano</h2>
+    <div class="field"><label>Nome</label><input id="pl-nome" value="${escapeHtml(pl.nome)}"></div>
+    <div class="field"><label>Valor mensal (R$)</label><input id="pl-valor" type="number" inputmode="decimal" value="${pl.valor_mensal||0}"></div>
+    <div class="field"><label>Dias inclusos</label><div class="chips">${dias.map((d,i)=>`<button class="chip" id="dia-${i}" style="${inc.includes(i)?'border-color:var(--accent);color:var(--accent)':''}" onclick="toggleDia(${i})">${d}</button>`).join('')}</div></div>
+    <div class="field"><label>Serviços inclusos</label><div class="chips">${SERVICOS.map(s=>`<button class="chip" id="srv-${s.id}" style="${servIds.includes(s.id)?'border-color:var(--accent);color:var(--accent)':''}" onclick="toggleSrv(${s.id})">${escapeHtml(s.nome)}</button>`).join('')}</div></div>
+    <div class="hint" style="margin-bottom:10px">A comissão dos assinantes é um <strong>bolo de 45% da arrecadação dos planos</strong>, rateado entre os barbeiros pela produção (configurado em Geral). Não é por plano.</div>
+    <button class="btn btn-primary btn-block" onclick="salvarPlano()">Salvar plano</button>
+    <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="render()">Voltar</button>
+  </div>`;
+  window._dias = [...inc]; window._srv = [...servIds];
+}
+function toggleDia(i){ const a=window._dias; const idx=a.indexOf(i); if(idx<0)a.push(i);else a.splice(idx,1); const el=document.getElementById('dia-'+i); el.style=a.includes(i)?'border-color:var(--accent);color:var(--accent)':''; }
+function toggleSrv(id){ const a=window._srv; const idx=a.indexOf(id); if(idx<0)a.push(id);else a.splice(idx,1); const el=document.getElementById('srv-'+id); el.style=a.includes(id)?'border-color:var(--accent);color:var(--accent)':''; }
+async function salvarPlano(){
+  const body={ nome:V('pl-nome'), valor_mensal:V('pl-valor'), dias_inclusos:window._dias, servicos:window._srv };
+  try { if(editId) await api('/api/planos/'+editId,{method:'PUT',body}); else await api('/api/planos',{method:'POST',body}); toast('Plano salvo!','ok'); tab('plano',document.querySelector('[data-t=plano]')); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+async function salvarGeral(){
+  try { await api('/api/config',{method:'PUT',body:{ marca_nome:V('g-nome'), marca_cor:V('g-cor'), formas_pagamento:V('g-formas').split(',').map(s=>s.trim()).filter(Boolean) }}); toast('Salvo!','ok'); }
+  catch(e){ toast(e.message,'err'); }
+}
+async function salvarHorarios(){
+  const h={}; for(let i=0;i<7;i++){ const a=V('h-'+i+'-a'),f=V('h-'+i+'-f'); h[i]=(a&&f)?{abre:a,fecha:f}:null; }
+  try { await api('/api/config',{method:'PUT',body:{horarios:h}}); toast('Horários salvos!','ok'); }
+  catch(e){ toast(e.message,'err'); }
+}
+
+renderShell('/mais'); render();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

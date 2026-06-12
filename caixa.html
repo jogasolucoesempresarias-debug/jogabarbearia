@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Caixa</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Caixa</h1><div class="sub">Fechamento do dia</div></div></div></div>
+  <div class="field"><input type="date" id="f-data" onchange="carregar()"></div>
+
+  <div class="grid2">
+    <div class="card kpi"><div class="label">Entradas</div><div class="value pos" id="k-receita">—</div></div>
+    <div class="card kpi"><div class="label">Saídas</div><div class="value neg" id="k-despesa">—</div></div>
+    <div class="card kpi"><div class="label">Saldo do dia</div><div class="value" id="k-saldo">—</div></div>
+    <div class="card kpi"><div class="label">Atendimentos</div><div class="value" id="k-atend">—</div></div>
+  </div>
+
+  <div class="section-title">Por forma de pagamento</div>
+  <div class="list" id="formas"></div>
+
+  <div class="section-title">A receber (assinaturas previstas)</div>
+  <div class="list" id="previstos"></div>
+
+  <div class="section-title">Lançamentos do dia</div>
+  <div class="list" id="movs"></div>
+</div>
+<button class="btn btn-primary btn-fab" onclick="openModal('m')">+</button>
+
+<div class="modal-bg" id="m">
+  <div class="modal">
+    <h2>Lançar manual</h2>
+    <div class="field"><label>Tipo</label><select id="t-tipo"><option value="despesa">Despesa</option><option value="receita">Receita</option></select></div>
+    <div class="field"><label>Descrição</label><input type="text" id="t-desc"></div>
+    <div class="field"><label>Valor (R$)</label><input type="number" id="t-valor" inputmode="decimal" step="0.01"></div>
+    <div class="field"><label>Forma</label><select id="t-forma"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
+    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('m')">Cancelar</button><button class="btn btn-primary" onclick="lancar()">Lançar</button></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+async function carregar() {
+  const data = document.getElementById('f-data').value || hoje();
+  try {
+    const f = await api('/api/caixa/fechamento?data=' + data);
+    document.getElementById('k-receita').textContent = money(f.total_receita);
+    document.getElementById('k-despesa').textContent = money(f.total_despesa);
+    const s = document.getElementById('k-saldo'); s.textContent = money(f.saldo); s.className = 'value ' + (f.saldo>=0?'pos':'neg');
+    document.getElementById('k-atend').textContent = f.atendimentos;
+    document.getElementById('formas').innerHTML = f.por_forma.length
+      ? f.por_forma.map(x=>`<div class="row-item"><div class="ri-main">${escapeHtml(x.forma)}</div><div class="ri-right">${money(x.total)} <span class="muted">(${x.qtd})</span></div></div>`).join('')
+      : '<div class="empty">Sem recebimentos.</div>';
+
+    const movs = (await api('/api/movimentos?de='+data+'&ate='+data)).rows;
+    document.getElementById('previstos').innerHTML = movs.filter(m=>m.status==='previsto').map(m=>`
+      <div class="row-item"><div><div class="ri-main">${escapeHtml(m.descricao)}</div><div class="ri-sub">vence ${fmtData(m.vencimento)}</div></div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="ri-right">${money(m.valor)}</div><button class="btn btn-sm btn-primary" onclick="baixar(${m.id})">Receber</button></div></div>`).join('') || '<div class="empty">Nada previsto.</div>';
+    document.getElementById('movs').innerHTML = movs.filter(m=>m.status==='pago').map(m=>`
+      <div class="row-item"><div><div class="ri-main">${escapeHtml(m.descricao)}</div><div class="ri-sub">${escapeHtml(m.forma_pagamento||'')} · ${m.origem}</div></div>
+        <div class="ri-right ${m.tipo==='receita'?'pos':'neg'}" style="color:${m.tipo==='receita'?'var(--green)':'var(--red)'}">${m.tipo==='receita'?'+':'−'}${money(m.valor)}</div></div>`).join('') || '<div class="empty">Sem lançamentos.</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function baixar(id) {
+  try { await api('/api/movimentos/'+id+'/pagar', { method:'POST', body:{} }); toast('Recebido!', 'ok'); carregar(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function lancar() {
+  try {
+    await api('/api/movimentos', { method:'POST', body:{ tipo:document.getElementById('t-tipo').value, descricao:document.getElementById('t-desc').value, valor:document.getElementById('t-valor').value, forma_pagamento:document.getElementById('t-forma').value }});
+    toast('Lançado!', 'ok'); closeModal('m'); ['t-desc','t-valor'].forEach(i=>document.getElementById(i).value=''); carregar();
+  } catch (e) { toast(e.message, 'err'); }
+}
+document.getElementById('f-data').value = hoje();
+renderShell('/caixa'); carregar();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>
