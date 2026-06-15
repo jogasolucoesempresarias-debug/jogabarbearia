@@ -25,6 +25,8 @@ cur.execute("""
         ativo        BOOLEAN DEFAULT true
     );
 """)
+# Dono-barbeiro não recebe comissão (o que atende é da casa)
+cur.execute("ALTER TABLE profissionais ADD COLUMN IF NOT EXISTS recebe_comissao BOOLEAN DEFAULT true;")
 
 # ── Usuários (login) — dono / caixa / barbeiro ────────────────────────
 cur.execute("""
@@ -250,7 +252,23 @@ cur.execute("""
 cur.execute("INSERT INTO configuracoes (id) VALUES (1) ON CONFLICT (id) DO NOTHING;")
 # Categorias de despesa (configuráveis, incluindo Impostos)
 cur.execute("""ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS categorias_despesa JSONB
-    DEFAULT '["Impostos","Aluguel","Insumos/Produtos","Energia/Água","Salários","Marketing","Manutenção","Outras"]'::jsonb;""")
+    DEFAULT '["Impostos","Aluguel","Insumos/Produtos","Energia/Água","Salários","Comissões","Marketing","Manutenção","Outras"]'::jsonb;""")
+
+# ── Comissões pagas (fechamento por barbeiro/período → despesa no caixa) ──
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS comissoes_pagas (
+        id              SERIAL PRIMARY KEY,
+        profissional_id INTEGER NOT NULL REFERENCES profissionais(id) ON DELETE CASCADE,
+        periodo_de      DATE NOT NULL,
+        periodo_ate     DATE NOT NULL,
+        valor           NUMERIC(10,2) NOT NULL,
+        data_pagamento  DATE NOT NULL DEFAULT CURRENT_DATE,
+        movimento_id    INTEGER REFERENCES movimentos(id) ON DELETE SET NULL,
+        criado_por      INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+        criado_em       TIMESTAMP DEFAULT NOW()
+    );
+""")
+cur.execute("CREATE INDEX IF NOT EXISTS ix_comissoes_prof ON comissoes_pagas(profissional_id, periodo_de, periodo_ate);")
 
 conn.commit()
 cur.close()

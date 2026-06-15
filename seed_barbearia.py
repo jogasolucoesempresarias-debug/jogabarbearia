@@ -28,10 +28,12 @@ def vazia(tabela):
 # ── Profissionais ─────────────────────────────────────────────────────
 # Regiane está sozinha (dona E barbeira). João Victor é o barbeiro de teste/treino.
 if vazia('profissionais'):
-    barbeiros = [('Regiane Vieira Zava', '#38bdf8'), ('João Victor', '#34d399')]
-    for nome, cor in barbeiros:
-        cur.execute("INSERT INTO profissionais (nome, comissao_pct, cor_agenda) VALUES (%s,45,%s)", (nome, cor))
-    print(f"[OK] {len(barbeiros)} barbeiros criados (Regiane, João Victor).")
+    # (nome, cor, recebe_comissao) — Regiane é dona+barbeira: NÃO recebe comissão (é da casa)
+    barbeiros = [('Regiane Vieira Zava', '#38bdf8', False), ('João Victor', '#34d399', True)]
+    for nome, cor, recebe in barbeiros:
+        cur.execute("INSERT INTO profissionais (nome, comissao_pct, cor_agenda, recebe_comissao) VALUES (%s,45,%s,%s)",
+                    (nome, cor, recebe))
+    print(f"[OK] {len(barbeiros)} barbeiros criados (Regiane=dona/sem comissão, João Victor).")
 
 # ── Usuários ──────────────────────────────────────────────────────────
 if vazia('usuarios'):

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Resultado</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Resultado</h1><div class="sub">Receitas − Despesas (DRE)</div></div></div></div>
+
+  <div class="filters"><div class="field" style="flex:1"><label>Mês</label><input type="month" id="f-mes" onchange="carregar()"></div></div>
+
+  <div class="card kpi" style="text-align:center;padding:24px">
+    <div class="label">Resultado do mês</div>
+    <div class="value" id="resultado" style="font-size:2.2rem">—</div>
+    <div class="hint" id="margem"></div>
+  </div>
+
+  <div class="section-title">Receitas</div>
+  <div class="list" id="receitas"></div>
+
+  <div class="section-title">Despesas</div>
+  <div class="list" id="despesas"></div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+function mesAtual() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; }
+function rangeMes() { const v = document.getElementById('f-mes').value || mesAtual(); const [y,m]=v.split('-').map(Number); const ult=new Date(y,m,0).getDate(); return [`${v}-01`, `${v}-${String(ult).padStart(2,'0')}`]; }
+
+function linha(nome, valor, neg) {
+  return `<div class="row-item"><div class="ri-main">${nome}</div><div class="ri-right" style="color:${neg?'var(--red)':'var(--green)'}">${neg?'−':'+'}${money(valor)}</div></div>`;
+}
+
+async function carregar() {
+  const [de, ate] = rangeMes();
+  try {
+    const j = await api(`/api/relatorios/dre?de=${de}&ate=${ate}`);
+    const r = j.receitas;
+    let rec = '';
+    if (r.servicos)    rec += linha('Serviços', r.servicos);
+    if (r.produtos)    rec += linha('Produtos', r.produtos);
+    if (r.assinaturas) rec += linha('Assinaturas (planos)', r.assinaturas);
+    if (r.outras)      rec += linha('Outras receitas', r.outras);
+    rec += `<div class="row-item" style="border:2px solid var(--border)"><div class="ri-main"><strong>Total de receitas</strong></div><div class="ri-right" style="color:var(--green)"><strong>${money(r.total)}</strong></div></div>`;
+    document.getElementById('receitas').innerHTML = r.total ? rec : '<div class="empty">Sem receitas no mês.</div>';
+
+    let desp = j.despesas.map(d=>linha(escapeHtml(d.categoria), d.total, true)).join('');
+    desp += `<div class="row-item" style="border:2px solid var(--border)"><div class="ri-main"><strong>Total de despesas</strong></div><div class="ri-right" style="color:var(--red)"><strong>−${money(j.despesas_total)}</strong></div></div>`;
+    document.getElementById('despesas').innerHTML = j.despesas_total ? desp : '<div class="empty">Sem despesas no mês.</div>';
+
+    const res = document.getElementById('resultado');
+    res.textContent = money(j.resultado);
+    res.className = 'value ' + (j.resultado >= 0 ? 'pos' : 'neg');
+    const margem = r.total ? (j.resultado / r.total * 100) : 0;
+    document.getElementById('margem').textContent = r.total ? `margem ${margem.toFixed(0)}% · receitas ${money(r.total)} − despesas ${money(j.despesas_total)}` : '';
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+document.getElementById('f-mes').value = mesAtual();
+renderShell('/mais');
+carregar();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

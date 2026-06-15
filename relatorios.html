@@ -11,7 +11,7 @@
 </head>
 <body>
 <div class="app">
-  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Relatórios</h1><div class="sub">Comissão por barbeiro</div></div></div></div>
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Comissões</h1><div class="sub">Fechamento por barbeiro</div></div></div></div>
 
   <div class="card">
     <div class="field"><label>Quinzena</label>
@@ -62,12 +62,24 @@ async function carregar() {
     document.getElementById('arrecad').textContent = money(j.plan_revenue);
     document.getElementById('bolo').textContent = money(j.pool);
     document.getElementById('total').textContent = money(j.total);
+    PERIODO = { de, ate };
     document.getElementById('lista').innerHTML = j.rows.length
       ? j.rows.map(r=>`<div class="row-item"><div>
-          <div class="ri-main">${escapeHtml(r.profissional||'—')}</div>
+          <div class="ri-main">${escapeHtml(r.profissional||'—')} ${r.pago?'<span class="badge pago">pago</span>':'<span class="badge previsto">pendente</span>'}</div>
           <div class="ri-sub">avulso ${money(r.avulso)} · bolo ${money(r.pool_share)} <span class="muted">(${r.participacao_pct}% · ${r.atend} atend.)</span></div></div>
-          <div class="ri-right" style="color:var(--green)">${money(r.total)}</div></div>`).join('')
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+            <div class="ri-right" style="color:var(--green)">${money(r.total)}</div>
+            ${r.pago?'':`<button class="btn btn-sm btn-primary" onclick="fechar(${r.profissional_id}, ${r.total})">Fechar e pagar</button>`}
+          </div></div>`).join('')
       : '<div class="empty">Nenhum atendimento no período.</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+let PERIODO = {};
+async function fechar(pid, valor) {
+  if (!confirm(`Fechar e pagar ${money(valor)} de comissão? Vira despesa no caixa.`)) return;
+  try {
+    await api('/api/comissoes/fechar', { method:'POST', body:{ profissional_id: pid, de: PERIODO.de, ate: PERIODO.ate, valor } });
+    toast('Comissão fechada e lançada no caixa!', 'ok'); carregar();
   } catch (e) { toast(e.message, 'err'); }
 }
 const qs = quinzenas();

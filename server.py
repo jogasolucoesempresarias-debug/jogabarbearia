@@ -28,6 +28,7 @@ def get_db():
         host=os.getenv('DB_HOST', 'localhost'), port=os.getenv('DB_PORT', '5432'),
         dbname=os.getenv('DB_NAME', 'joga_barbearia'),
         user=os.getenv('DB_USER', 'postgres'), password=os.getenv('DB_PASSWORD', ''),
+        options='-c timezone=America/Sao_Paulo',   # NOW()/CURRENT_DATE/::date em horário de Brasília
     )
 
 
@@ -155,6 +156,7 @@ PAGINAS = {
     '/caixa':       'caixa.html',
     '/despesas':    'despesas.html',
     '/relatorios':  'relatorios.html',
+    '/dre':         'dre.html',
     '/config':      'config.html',
     '/barbeiro':    'barbeiro.html',
 }
@@ -271,8 +273,10 @@ def prof_create():
     d = request.get_json() or {}
     if not (d.get('nome') or '').strip():
         return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
-    row = execute("INSERT INTO profissionais (nome, comissao_pct, cor_agenda) VALUES (%s,%s,%s) RETURNING *",
-                  (d['nome'].strip(), d.get('comissao_pct') or 45, d.get('cor_agenda') or '#38bdf8'), returning=True)
+    recebe = d.get('recebe_comissao')
+    recebe = True if recebe is None else bool(recebe)
+    row = execute("INSERT INTO profissionais (nome, comissao_pct, cor_agenda, recebe_comissao) VALUES (%s,%s,%s,%s) RETURNING *",
+                  (d['nome'].strip(), d.get('comissao_pct') or 45, d.get('cor_agenda') or '#38bdf8', recebe), returning=True)
     return jsonify({'ok': True, 'row': row})
 
 
@@ -281,8 +285,9 @@ def prof_create():
 @role_required('dono')
 def prof_update(pid):
     d = request.get_json() or {}
-    execute("UPDATE profissionais SET nome=COALESCE(%s,nome), comissao_pct=COALESCE(%s,comissao_pct), cor_agenda=COALESCE(%s,cor_agenda) WHERE id=%s",
-            (d.get('nome'), d.get('comissao_pct'), d.get('cor_agenda'), pid))
+    execute("""UPDATE profissionais SET nome=COALESCE(%s,nome), comissao_pct=COALESCE(%s,comissao_pct),
+               cor_agenda=COALESCE(%s,cor_agenda), recebe_comissao=COALESCE(%s,recebe_comissao) WHERE id=%s""",
+            (d.get('nome'), d.get('comissao_pct'), d.get('cor_agenda'), d.get('recebe_comissao'), pid))
     return jsonify({'ok': True})
 
 
@@ -982,43 +987,50 @@ def rel_comissao():
     pool = plan_revenue * pool_pct / 100.0
 
     avulso_rows = q_all("""
-        SELECT ci.profissional_id, pr.nome AS prof_nome, pr.comissao_pct,
+        SELECT ci.profissional_id, pr.nome AS prof_nome, pr.comissao_pct, pr.recebe_comissao,
                COALESCE(SUM(ci.subtotal),0) AS base
         FROM comanda_itens ci JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
         LEFT JOIN profissionais pr ON pr.id=ci.profissional_id
         WHERE ci.tipo='servico' AND ci.coberto_plano=false AND c.fechada_em::date BETWEEN %s AND %s
-        GROUP BY ci.profissional_id, pr.nome, pr.comissao_pct
+        GROUP BY ci.profissional_id, pr.nome, pr.comissao_pct, pr.recebe_comissao
     """, (de, ate))
     # Produção = VISITAS de assinante (cada comanda com >=1 serviço coberto = 1 atendimento)
     atend_rows = q_all("""
-        SELECT c.profissional_id, pr.nome AS prof_nome, COUNT(DISTINCT c.id) AS atend
+        SELECT c.profissional_id, pr.nome AS prof_nome, pr.recebe_comissao, COUNT(DISTINCT c.id) AS atend
         FROM comandas c
         LEFT JOIN profissionais pr ON pr.id=c.profissional_id
         WHERE c.status='fechada' AND c.fechada_em::date BETWEEN %s AND %s
           AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano=true)
-        GROUP BY c.profissional_id, pr.nome
+        GROUP BY c.profissional_id, pr.nome, pr.recebe_comissao
     """, (de, ate))
 
+    # total_atend inclui TODOS (até a dona) → a fração dela não é distribuída (fica com a casa)
     total_atend = sum(r['atend'] for r in atend_rows) or 0
-    barb = {}
+
+    # já pagos (fechamentos) deste período exato
+    pagos = {r['profissional_id'] for r in q_all(
+        "SELECT profissional_id FROM comissoes_pagas WHERE periodo_de=%s AND periodo_ate=%s", (de, ate))}
+
+    barb = {}  # só quem RECEBE comissão entra no resultado
     for r in avulso_rows:
-        if r['profissional_id'] is None:
+        if r['profissional_id'] is None or not r['recebe_comissao']:
             continue
-        b = barb.setdefault(r['profissional_id'], {'profissional': r['prof_nome'], 'avulso': 0.0, 'atend': 0})
+        b = barb.setdefault(r['profissional_id'], {'id': r['profissional_id'], 'profissional': r['prof_nome'], 'avulso': 0.0, 'atend': 0})
         b['avulso'] = float(r['base']) * float(r['comissao_pct'] or 0) / 100.0
     for r in atend_rows:
-        if r['profissional_id'] is None:
+        if r['profissional_id'] is None or not r['recebe_comissao']:
             continue
-        b = barb.setdefault(r['profissional_id'], {'profissional': r['prof_nome'], 'avulso': 0.0, 'atend': 0})
+        b = barb.setdefault(r['profissional_id'], {'id': r['profissional_id'], 'profissional': r['prof_nome'], 'avulso': 0.0, 'atend': 0})
         b['atend'] = r['atend']
 
     rows = []
     for b in barb.values():
         share = (b['atend'] / total_atend) if total_atend else 0
         pool_share = pool * share
-        rows.append({'profissional': b['profissional'], 'avulso': round(b['avulso'], 2),
+        rows.append({'profissional_id': b['id'], 'profissional': b['profissional'], 'avulso': round(b['avulso'], 2),
                      'atend': b['atend'], 'participacao_pct': round(share * 100, 1),
-                     'pool_share': round(pool_share, 2), 'total': round(b['avulso'] + pool_share, 2)})
+                     'pool_share': round(pool_share, 2), 'total': round(b['avulso'] + pool_share, 2),
+                     'pago': b['id'] in pagos})
     rows.sort(key=lambda x: x['total'], reverse=True)
     return jsonify({'ok': True, 'de': de.isoformat(), 'ate': ate.isoformat(),
                     'plan_revenue': round(plan_revenue, 2), 'pool': round(pool, 2),
@@ -1033,6 +1045,10 @@ def rel_minha_comissao():
     pid = session.get('profissional_id')
     if not pid:
         return jsonify({'ok': True, 'comissao': 0, 'atendimentos': 0})
+    recebe = scalar("SELECT recebe_comissao FROM profissionais WHERE id=%s", (pid,))
+    if not recebe:
+        return jsonify({'ok': True, 'comissao': 0, 'avulso': 0, 'pool_share': 0, 'atendimentos': 0,
+                        'sem_comissao': True})
     hoje = date.today()
     de = hoje.replace(day=1) if hoje.day <= 15 else hoje.replace(day=16)
 
@@ -1061,6 +1077,64 @@ def rel_minha_comissao():
     return jsonify({'ok': True, 'comissao': round(avulso + pool_share, 2),
                     'avulso': round(avulso, 2), 'pool_share': round(pool_share, 2),
                     'atendimentos': meu_atend, 'periodo': f"{de.isoformat()} a {hoje.isoformat()}"})
+
+
+@app.route('/api/comissoes/fechar', methods=['POST'])
+@login_required
+def comissao_fechar():
+    """Fecha/paga a comissão de um barbeiro no período → vira despesa (sai do caixa) + registro pago."""
+    d = request.get_json() or {}
+    pid = d.get('profissional_id')
+    de = parse_date(d.get('de'))
+    ate = parse_date(d.get('ate'))
+    try:
+        valor = float(d.get('valor'))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'Valor inválido'}), 400
+    if not (pid and de and ate):
+        return jsonify({'ok': False, 'error': 'Dados incompletos'}), 400
+    if scalar("SELECT COUNT(*) FROM comissoes_pagas WHERE profissional_id=%s AND periodo_de=%s AND periodo_ate=%s", (pid, de, ate)):
+        return jsonify({'ok': False, 'error': 'Comissão deste período já foi fechada'}), 409
+    prof = q_one("SELECT nome FROM profissionais WHERE id=%s", (pid,))
+    nome = prof['nome'] if prof else f"barbeiro {pid}"
+    mov = execute("""INSERT INTO movimentos (tipo, origem, descricao, categoria, valor, data, status, criado_por)
+                     VALUES ('despesa','manual',%s,'Comissões',%s,CURRENT_DATE,'pago',%s) RETURNING id""",
+                  (f"Comissão {nome} ({de.strftime('%d/%m')}–{ate.strftime('%d/%m')})", valor, session['user_id']), returning=True)
+    execute("""INSERT INTO comissoes_pagas (profissional_id, periodo_de, periodo_ate, valor, movimento_id, criado_por)
+               VALUES (%s,%s,%s,%s,%s,%s)""", (pid, de, ate, valor, mov['id'], session['user_id']))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/relatorios/dre')
+@login_required
+def rel_dre():
+    """Resultado (DRE) do período — base caixa (status=pago / comandas fechadas)."""
+    de = parse_date(request.args.get('de'), date.today().replace(day=1))
+    ate = parse_date(request.args.get('ate'), date.today())
+
+    rec_serv = scalar("""SELECT COALESCE(SUM(ci.subtotal),0) FROM comanda_itens ci
+        JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        WHERE ci.tipo='servico' AND c.fechada_em::date BETWEEN %s AND %s""", (de, ate)) or 0
+    rec_prod = scalar("""SELECT COALESCE(SUM(ci.subtotal),0) FROM comanda_itens ci
+        JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        WHERE ci.tipo='produto' AND c.fechada_em::date BETWEEN %s AND %s""", (de, ate)) or 0
+    rec_assin = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
+        WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
+    rec_outras = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
+        WHERE origem='manual' AND tipo='receita' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
+    total_rec = rec_serv + rec_prod + rec_assin + rec_outras
+
+    despesas = q_all("""SELECT COALESCE(categoria,'Sem categoria') AS categoria, COALESCE(SUM(valor),0) AS total
+        FROM movimentos WHERE tipo='despesa' AND status='pago' AND data BETWEEN %s AND %s
+        GROUP BY categoria ORDER BY total DESC""", (de, ate))
+    total_desp = sum(float(x['total']) for x in despesas)
+
+    return jsonify({'ok': True, 'de': de.isoformat(), 'ate': ate.isoformat(),
+                    'receitas': {'servicos': round(rec_serv, 2), 'produtos': round(rec_prod, 2),
+                                 'assinaturas': round(rec_assin, 2), 'outras': round(rec_outras, 2),
+                                 'total': round(total_rec, 2)},
+                    'despesas': despesas, 'despesas_total': round(total_desp, 2),
+                    'resultado': round(total_rec - total_desp, 2)})
 
 
 if __name__ == '__main__':

@@ -53,7 +53,8 @@ const NAV_PRIMARIO = [
 const NAV_MAIS = [
   { href: '/assinaturas', ic: '⭐', label: 'Assinaturas' },
   { href: '/despesas', ic: '💸', label: 'Despesas' },
-  { href: '/relatorios', ic: '📊', label: 'Relatórios' },
+  { href: '/relatorios', ic: '✂️', label: 'Comissões' },
+  { href: '/dre', ic: '📈', label: 'Resultado' },
   { href: '/config', ic: '⚙️', label: 'Configurações', role: 'dono' },
 ];
 
