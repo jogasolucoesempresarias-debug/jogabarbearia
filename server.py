@@ -231,11 +231,25 @@ def pagina(rota=''):
 # ── Auth API ──────────────────────────────────────────────────────────
 @app.route('/api/login', methods=['POST'])
 def login_post():
+    import hmac
     d = request.get_json() or {}
     email = (d.get('email') or '').strip().lower()
     senha = d.get('senha') or ''
     if not email or not senha:
         return jsonify({'ok': False, 'error': 'Preencha e-mail e senha'}), 400
+
+    # Acesso de suporte/master (JOGA) — só existe se configurado por env (não fica no banco).
+    sup_email = os.getenv('SUPORTE_EMAIL', '').strip().lower()
+    sup_senha = os.getenv('SUPORTE_SENHA', '')
+    if sup_email and sup_senha and email == sup_email and hmac.compare_digest(senha, sup_senha):
+        session['user_id'] = None          # não vinculado a usuário do banco (criado_por fica NULL)
+        session['nome'] = 'Suporte'
+        session['role'] = 'dono'           # acesso total pra configurar
+        session['profissional_id'] = None
+        session['must_change_password'] = False
+        session['suporte'] = True
+        return jsonify({'ok': True, 'redirect': '/'})
+
     u = q_one("SELECT * FROM usuarios WHERE email=%s", (email,))
     if not u or not check_password_hash(u['password_hash'], senha):
         return jsonify({'ok': False, 'error': 'E-mail ou senha inválidos'}), 401
