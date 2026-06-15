@@ -22,7 +22,7 @@
   </div>
   <div style="display:flex;gap:8px;margin-bottom:12px">
     <button class="btn btn-sm" onclick="irHoje()">Hoje</button>
-    <button class="btn btn-sm btn-primary" style="flex:1" onclick="abrirWalkin()">⚡ Walk-in (sem hora)</button>
+    <button class="btn btn-sm btn-primary" style="flex:1" id="btn-walkin" onclick="abrirWalkin()">⚡ Walk-in (sem hora)</button>
   </div>
 
   <div id="conteudo"><div class="empty">Carregando…</div></div>
@@ -56,9 +56,11 @@
   <div class="modal">
     <h2 id="ac-titulo">Agendamento</h2>
     <div class="card"><div id="ac-info"></div></div>
-    <button class="btn btn-primary btn-block" style="margin-top:10px" onclick="abrirComandaDoAgendamento()">🧾 Abrir comanda (atender)</button>
-    <button class="btn btn-block" style="margin-top:8px" onclick="acaoAgendamento('falta')">Marcar falta</button>
-    <button class="btn btn-danger btn-block" style="margin-top:8px" onclick="acaoAgendamento('cancelado')">Cancelar agendamento</button>
+    <div id="ac-acoes">
+      <button class="btn btn-primary btn-block" style="margin-top:10px" onclick="abrirComandaDoAgendamento()">🧾 Abrir comanda (atender)</button>
+      <button class="btn btn-block" style="margin-top:8px" onclick="acaoAgendamento('falta')">Marcar falta</button>
+      <button class="btn btn-danger btn-block" style="margin-top:8px" onclick="acaoAgendamento('cancelado')">Cancelar agendamento</button>
+    </div>
     <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="closeModal('mAcao')">Fechar</button>
   </div>
 </div>
@@ -101,6 +103,7 @@
 <script>
 let DADOS = null, SERVICOS = [], PROFS = [], ctxAgendar = {}, ctxAcao = {}, ctxNovoCli = null;
 let selCli = { ag: null, wk: null };
+let READONLY = false;  // barbeiro: só visualiza a própria agenda
 
 function setData(iso) { document.getElementById('f-data').value = iso; }
 function mudarDia(n) { const d = new Date(document.getElementById('f-data').value + 'T00:00:00'); d.setDate(d.getDate()+n); setData(d.toISOString().slice(0,10)); carregar(); }
@@ -162,6 +165,8 @@ function render() {
         html += `<div class="slot ocupado" onclick="abrirAcao(${o.ag.id})"><span class="muted">↳ ${escapeHtml(o.ag.cliente_nome || '')}</span></div>`;
       } else if (bloqueado(p.id, slot)) {
         html += `<div class="slot bloqueado">—</div>`;
+      } else if (READONLY) {
+        html += `<div class="slot livre"></div>`;
       } else {
         html += `<div class="slot livre" onclick="abrirAgendar(${p.id},'${slot}')">+ </div>`;
       }
@@ -256,6 +261,7 @@ function abrirAcao(agId) {
   document.getElementById('ac-info').innerHTML =
     `<strong>${escapeHtml(ag.cliente_nome||'Cliente')}</strong><br>
      <span class="muted">${escapeHtml(servTxt)} · ${hhmm(ag.hora_inicio)}</span>`;
+  document.getElementById('ac-acoes').style.display = READONLY ? 'none' : 'block';  // barbeiro só vê
   openModal('mAcao');
 }
 async function acaoAgendamento(status) {
@@ -286,8 +292,15 @@ async function abrirWalkinComanda() {
 }
 
 setData(hoje());
-renderShell('/');
-carregar();
+(async () => {
+  await renderShell('/');
+  READONLY = !!(ME && ME.role === 'barbeiro');
+  if (READONLY) {
+    const wk = document.getElementById('btn-walkin'); if (wk) wk.style.display = 'none';
+    document.querySelector('.topbar h1').textContent = 'Minha agenda';
+  }
+  carregar();
+})();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 </body>

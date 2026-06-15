@@ -147,6 +147,28 @@ def role_required(*roles):
     return wrap
 
 
+# ── RBAC do barbeiro: só a própria agenda + a própria comissão ────────
+# Tudo o mais (caixa, despesas, comandas, clientes, comissões, DRE, config) é bloqueado,
+# mesmo se ele digitar a URL direto. Defesa de verdade, não só esconder no menu.
+BARBEIRO_PERMITIDO = {
+    '/', '/barbeiro', '/login', '/trocar-senha', '/logout', '/health', '/manifest.json', '/sw.js',
+    '/api/me', '/api/login', '/api/trocar-senha', '/api/agenda',
+    '/api/relatorios/minha-comissao', '/api/servicos',
+}
+
+
+@app.before_request
+def _rbac_barbeiro():
+    if session.get('role') != 'barbeiro':
+        return
+    p = request.path
+    if p in BARBEIRO_PERMITIDO or p.startswith('/static/'):
+        return
+    if p.startswith('/api/'):
+        return jsonify({'ok': False, 'error': 'Acesso restrito ao caixa/dono'}), 403
+    return redirect('/')
+
+
 # ── Páginas ───────────────────────────────────────────────────────────
 PAGINAS = {
     '/':            'agenda.html',
