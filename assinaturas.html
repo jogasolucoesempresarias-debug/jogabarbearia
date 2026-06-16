@@ -24,7 +24,9 @@
       <input type="text" id="a-busca" placeholder="Buscar cliente..." oninput="buscar(this.value)">
       <div id="a-res"></div><div id="a-sel" class="muted" style="margin-top:6px"></div></div>
     <div class="field"><label>Plano</label><select id="a-plano"></select></div>
-    <div class="field"><label>Vencimento</label><select id="a-venc"><option value="10">Dia 10</option><option value="30">Dia 30</option></select></div>
+    <div class="field"><label>Vencimento das próximas (a partir do mês que vem)</label><select id="a-venc"><option value="10">Dia 10</option><option value="30">Dia 30</option></select></div>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="a-receber" checked style="width:auto"> Receber a 1ª mensalidade agora (cai no caixa hoje)</label>
+    <div class="field" id="a-forma-wrap"><label>Forma de pagamento</label><select id="a-forma"></select></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal('m')">Cancelar</button>
       <button class="btn btn-primary" onclick="salvar()">Criar assinatura</button>
@@ -34,7 +36,7 @@
 
 <script src="/static/app.js"></script>
 <script>
-let PLANOS = [], sel = null, _t;
+let PLANOS = [], FORMAS = [], sel = null, _t;
 async function carregar() {
   try {
     const { rows } = await api('/api/assinaturas');
@@ -44,7 +46,7 @@ async function carregar() {
     cont.innerHTML = rows.map(a => `
       <div class="row-item">
         <div><div class="ri-main">${escapeHtml(a.cliente_nome)} <span class="badge ${a.status}">${a.status}</span></div>
-          <div class="ri-sub">${escapeHtml(a.plano_nome)} · ${money(a.valor_mensal)}/mês · vence dia ${a.dia_vencimento}</div></div>
+          <div class="ri-sub">${escapeHtml(a.plano_nome)} · ${money(a.valor_mensal)}/mês · dia ${a.dia_vencimento}${a.proxima_cobranca?(' · próx. '+fmtData(a.proxima_cobranca)):''}</div></div>
         <div style="display:flex;gap:6px">
           ${a.status==='ativa'?`<button class="btn btn-sm" onclick="status(${a.id},'pausada')">pausar</button>`:''}
           ${a.status==='pausada'?`<button class="btn btn-sm" onclick="status(${a.id},'ativa')">ativar</button>`:''}
@@ -64,13 +66,18 @@ function buscar(v) {
 function abrirNovo() {
   sel=null; document.getElementById('a-sel').textContent=''; document.getElementById('a-busca').value=''; document.getElementById('a-res').innerHTML='';
   document.getElementById('a-plano').innerHTML = PLANOS.map(p=>`<option value="${p.id}">${escapeHtml(p.nome)} · ${money(p.valor_mensal)}</option>`).join('');
+  document.getElementById('a-forma').innerHTML = FORMAS.map(f=>`<option>${escapeHtml(f)}</option>`).join('');
+  document.getElementById('a-receber').checked = true; document.getElementById('a-forma-wrap').style.display = 'block';
   openModal('m');
 }
+document.addEventListener('change', e => { if (e.target && e.target.id === 'a-receber') document.getElementById('a-forma-wrap').style.display = e.target.checked ? 'block' : 'none'; });
 async function salvar() {
   if (!sel) return toast('Escolha o cliente.', 'err');
+  const receber = document.getElementById('a-receber').checked;
   try {
-    await api('/api/assinaturas', { method:'POST', body:{ cliente_id: sel.id, plano_id: document.getElementById('a-plano').value, dia_vencimento: document.getElementById('a-venc').value } });
-    toast('Assinatura criada!', 'ok'); closeModal('m'); carregar();
+    await api('/api/assinaturas', { method:'POST', body:{ cliente_id: sel.id, plano_id: document.getElementById('a-plano').value,
+      dia_vencimento: document.getElementById('a-venc').value, receber_agora: receber, forma_pagamento: document.getElementById('a-forma').value } });
+    toast(receber ? 'Assinatura criada e 1ª mensalidade no caixa!' : 'Assinatura criada!', 'ok'); closeModal('m'); carregar();
   } catch (e) { toast(e.message, 'err'); }
 }
 async function status(id, s) {
@@ -83,7 +90,7 @@ async function gerarCobrancas() {
     toast(j.gerados>0?(j.gerados+' cobrança(s) gerada(s) — veja no Caixa.'):'Nada a gerar (já feito este mês).', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
 }
-(async () => { await renderShell('/mais'); PLANOS = (await api('/api/planos')).rows; carregar(); })();
+(async () => { await renderShell('/mais'); PLANOS = (await api('/api/planos')).rows; FORMAS = (await api('/api/config')).config.formas_pagamento || ['Dinheiro','Pix','Cartão']; carregar(); })();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 </body>

@@ -4,6 +4,7 @@ Rode: python -X utf8 server.py   ·   Acesse: http://localhost:5000
 """
 import os
 import math
+import calendar
 import functools
 from datetime import date, datetime, time
 
@@ -811,6 +812,19 @@ def assin_list():
     return jsonify({'ok': True, 'rows': rows})
 
 
+def _add_um_mes(dt):
+    m = dt.month % 12 + 1
+    y = dt.year + (1 if dt.month == 12 else 0)
+    return date(y, m, min(dt.day, calendar.monthrange(y, m)[1]))
+
+
+def _dia_mes_seguinte(base, dia):
+    """Dia (10/30) do mês SEGUINTE ao da data base (~1 mês à frente)."""
+    m = base.month % 12 + 1
+    y = base.year + (1 if base.month == 12 else 0)
+    return date(y, m, min(dia, calendar.monthrange(y, m)[1]))
+
+
 @app.route('/api/assinaturas', methods=['POST'])
 @login_required
 def assin_create():
@@ -820,9 +834,20 @@ def assin_create():
     venc = int(d.get('dia_vencimento') or 10)
     if venc not in (10, 30):
         venc = 10
-    row = execute("""INSERT INTO assinaturas (cliente_id, plano_id, dia_vencimento)
-                     VALUES (%s,%s,%s) RETURNING id""", (d['cliente_id'], d['plano_id'], venc), returning=True)
-    return jsonify({'ok': True, 'id': row['id']})
+    pl = q_one("SELECT valor_mensal FROM planos WHERE id=%s", (d['plano_id'],))
+    cli = q_one("SELECT nome FROM clientes WHERE id=%s", (d['cliente_id'],))
+    hoje = date.today()
+    proxima = _dia_mes_seguinte(hoje, venc)   # 1ª paga hoje → próxima no dia escolhido do mês seguinte
+    row = execute("""INSERT INTO assinaturas (cliente_id, plano_id, dia_vencimento, proxima_cobranca)
+                     VALUES (%s,%s,%s,%s) RETURNING id""",
+                  (d['cliente_id'], d['plano_id'], venc, proxima), returning=True)
+    # 1ª mensalidade cobrada na hora → cai no caixa hoje
+    if d.get('receber_agora', True) and pl:
+        execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, forma_pagamento, data, status, criado_por)
+                   VALUES ('receita','assinatura',%s,%s,%s,%s,CURRENT_DATE,'pago',%s)""",
+                (row['id'], f"Assinatura {cli['nome'] if cli else ''} — 1ª mensalidade",
+                 pl['valor_mensal'], d.get('forma_pagamento'), session['user_id']))
+    return jsonify({'ok': True, 'id': row['id'], 'proxima_cobranca': proxima.isoformat()})
 
 
 @app.route('/api/assinaturas/<int:aid>', methods=['PUT'])
@@ -838,7 +863,8 @@ def assin_update(aid):
 @app.route('/api/assinaturas/gerar-cobrancas', methods=['POST'])
 @login_required
 def assin_gerar_cobrancas():
-    """Gera a cobrança mensal (movimento previsto, venc 10/30) das assinaturas ativas."""
+    """Gera as cobranças (previsto) das assinaturas conforme a próxima_cobranca, até o fim do mês
+    selecionado. Avança a próxima_cobranca de mês em mês. Idempotente."""
     d = request.get_json() or {}
     comp = d.get('competencia')  # 'YYYY-MM'
     hoje = date.today()
@@ -846,23 +872,24 @@ def assin_gerar_cobrancas():
         ano, mes = (int(comp[:4]), int(comp[5:7])) if comp else (hoje.year, hoje.month)
     except (ValueError, IndexError):
         return jsonify({'ok': False, 'error': 'Competência inválida'}), 400
-    import calendar
-    ult = calendar.monthrange(ano, mes)[1]
-    ativas = q_all("""SELECT a.*, pl.valor_mensal, c.nome AS cliente_nome FROM assinaturas a
-                      JOIN planos pl ON pl.id=a.plano_id JOIN clientes c ON c.id=a.cliente_id
+    ref = date(ano, mes, calendar.monthrange(ano, mes)[1])   # gera o que vence até o fim do mês
+    ativas = q_all("""SELECT a.id, a.dia_vencimento, a.proxima_cobranca, pl.valor_mensal, c.nome AS cliente_nome
+                      FROM assinaturas a JOIN planos pl ON pl.id=a.plano_id JOIN clientes c ON c.id=a.cliente_id
                       WHERE a.status='ativa'""")
     gerados = 0
     for a in ativas:
-        dia = min(a['dia_vencimento'], ult)
-        venc = date(ano, mes, dia)
-        existe = scalar("""SELECT COUNT(*) FROM movimentos WHERE origem='assinatura' AND ref_id=%s
-                           AND date_trunc('month', vencimento)=date_trunc('month', %s::date)""", (a['id'], venc))
-        if existe:
-            continue
-        execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, data, vencimento, status, criado_por)
-                   VALUES ('receita','assinatura',%s,%s,%s,%s,%s,'previsto',%s)""",
-                (a['id'], f"Mensalidade — {a['cliente_nome']}", a['valor_mensal'], venc, venc, session['user_id']))
-        gerados += 1
+        px = parse_date(a['proxima_cobranca'])
+        if not px:
+            px = _dia_mes_seguinte(hoje, a['dia_vencimento'])  # legado sem proxima_cobranca
+        while px <= ref:
+            existe = scalar("SELECT COUNT(*) FROM movimentos WHERE origem='assinatura' AND ref_id=%s AND vencimento=%s", (a['id'], px))
+            if not existe:
+                execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, data, vencimento, status, criado_por)
+                           VALUES ('receita','assinatura',%s,%s,%s,%s,%s,'previsto',%s)""",
+                        (a['id'], f"Mensalidade — {a['cliente_nome']}", a['valor_mensal'], px, px, session['user_id']))
+                gerados += 1
+            px = _add_um_mes(px)
+        execute("UPDATE assinaturas SET proxima_cobranca=%s WHERE id=%s", (px, a['id']))
     return jsonify({'ok': True, 'gerados': gerados})
 
 

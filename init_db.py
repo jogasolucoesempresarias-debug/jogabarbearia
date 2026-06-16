@@ -122,6 +122,8 @@ cur.execute("""
     );
 """)
 cur.execute("CREATE INDEX IF NOT EXISTS ix_assin_cliente ON assinaturas(cliente_id);")
+# Data da próxima cobrança (recorrência por dia 10/30 a partir do mês seguinte à assinatura)
+cur.execute("ALTER TABLE assinaturas ADD COLUMN IF NOT EXISTS proxima_cobranca DATE;")
 
 # ── Agendamentos ──────────────────────────────────────────────────────
 cur.execute("""
