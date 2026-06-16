@@ -1002,9 +1002,12 @@ def assin_gerar_cobrancas():
     except (ValueError, IndexError):
         return jsonify({'ok': False, 'error': 'Competência inválida'}), 400
     ref = date(ano, mes, calendar.monthrange(ano, mes)[1])   # gera o que vence até o fim do mês
-    ativas = q_all("""SELECT a.id, a.dia_vencimento, a.proxima_cobranca, pl.valor_mensal, c.nome AS cliente_nome
+    # assinatura_id opcional: gera só a desse assinante (botão por linha); sem ele, gera de todas
+    aid = d.get('assinatura_id')
+    filtro, params = ("AND a.id=%s", (aid,)) if aid else ("", ())
+    ativas = q_all(f"""SELECT a.id, a.dia_vencimento, a.proxima_cobranca, pl.valor_mensal, c.nome AS cliente_nome
                       FROM assinaturas a JOIN planos pl ON pl.id=a.plano_id JOIN clientes c ON c.id=a.cliente_id
-                      WHERE a.status='ativa'""")
+                      WHERE a.status='ativa' {filtro}""", params)
     gerados = 0
     for a in ativas:
         px = parse_date(a['proxima_cobranca'])

@@ -47,7 +47,8 @@ async function carregar() {
       <div class="row-item">
         <div><div class="ri-main">${escapeHtml(a.cliente_nome)} <span class="badge ${a.status}">${a.status}</span></div>
           <div class="ri-sub">${escapeHtml(a.plano_nome)} · ${money(a.valor_mensal)}/mês · dia ${a.dia_vencimento}${a.proxima_cobranca?(' · próx. '+fmtData(a.proxima_cobranca)):''}</div></div>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          ${a.status==='ativa'?`<button class="btn btn-sm btn-primary" onclick="gerarUma(${a.id})">gerar cobrança</button>`:''}
           ${a.status==='ativa'?`<button class="btn btn-sm" onclick="status(${a.id},'pausada')">pausar</button>`:''}
           ${a.status==='pausada'?`<button class="btn btn-sm" onclick="status(${a.id},'ativa')">ativar</button>`:''}
           <button class="btn btn-sm btn-danger" onclick="status(${a.id},'cancelada')">×</button>
@@ -87,7 +88,12 @@ async function status(id, s) {
 }
 async function gerarCobrancas() {
   try { const j = await api('/api/assinaturas/gerar-cobrancas', { method:'POST', body:{} });
-    toast(j.gerados>0?(j.gerados+' cobrança(s) gerada(s) — veja no Caixa.'):'Nada a gerar (já feito este mês).', 'ok'); }
+    toast(j.gerados>0?(j.gerados+' cobrança(s) gerada(s) — veja no Caixa.'):'Nada a gerar (já feito este mês).', 'ok'); carregar(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function gerarUma(id) {
+  try { const j = await api('/api/assinaturas/gerar-cobrancas', { method:'POST', body:{ assinatura_id: id } });
+    toast(j.gerados>0?(j.gerados+' cobrança(s) gerada(s) — veja no Caixa.'):'Nada a gerar (já feito ou ainda não venceu).', 'ok'); carregar(); }
   catch (e) { toast(e.message, 'err'); }
 }
 (async () => { await renderShell('/mais'); PLANOS = (await api('/api/planos')).rows; FORMAS = (await api('/api/config')).config.formas_pagamento || ['Dinheiro','Pix','Cartão']; carregar(); })();
