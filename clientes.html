@@ -31,6 +31,7 @@
       <button class="btn btn-ghost" onclick="closeModal('m')">Cancelar</button>
       <button class="btn btn-primary" onclick="salvar()">Salvar</button>
     </div>
+    <button class="btn btn-danger btn-block" id="c-excluir" style="display:none;margin-top:10px" onclick="excluirCliente()">Excluir cliente</button>
   </div>
 </div>
 
@@ -85,6 +86,7 @@ function abrirNovo() {
   ['c-id','c-nome','c-tel','c-obs'].forEach(i=>document.getElementById(i).value='');
   document.getElementById('c-tipo').value='universal'; toggleFixo();
   document.getElementById('c-fixo').innerHTML = '<option value="">—</option>'+PROFS.map(p=>`<option value="${p.id}">${escapeHtml(p.nome)}</option>`).join('');
+  document.getElementById('c-excluir').style.display = 'none';
   openModal('m');
 }
 async function editar(id) {
@@ -97,7 +99,17 @@ async function editar(id) {
     document.getElementById('c-tipo').value = c.tipo; toggleFixo();
     document.getElementById('c-fixo').innerHTML = '<option value="">—</option>'+PROFS.map(p=>`<option value="${p.id}" ${p.id==c.profissional_fixo_id?'selected':''}>${escapeHtml(p.nome)}</option>`).join('');
     document.getElementById('c-obs').value = c.observacoes||'';
+    document.getElementById('c-excluir').style.display = 'block';
     openModal('m');
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function excluirCliente() {
+  const id = document.getElementById('c-id').value;
+  if (!id) return;
+  if (!confirm('Excluir este cliente? (só é possível se ele não tiver histórico de comandas/assinaturas/agenda)')) return;
+  try {
+    await api('/api/clientes/'+id, { method:'DELETE' });
+    toast('Cliente excluído.', 'ok'); closeModal('m'); carregar(document.getElementById('busca').value);
   } catch (e) { toast(e.message, 'err'); }
 }
 async function salvar() {

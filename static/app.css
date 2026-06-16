@@ -111,9 +111,9 @@ a { color: inherit; text-decoration: none; }
 .chip:active { border-color: var(--accent); }
 .chip .p { color: var(--text-dim); font-size: 0.75rem; margin-left: 4px; }
 
-/* Tabs */
-.tabs { display: flex; gap: 6px; background: var(--surface2); padding: 4px; border-radius: 12px; margin-bottom: 14px; }
-.tabs button { flex: 1; padding: 10px; background: none; border: none; color: var(--text-dim); font-weight: 700; font-size: 0.84rem; border-radius: 9px; cursor: pointer; font-family: inherit; }
+/* Tabs — quebram em 2 linhas no mobile quando são muitas (sem estourar a tela) */
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; background: var(--surface2); padding: 4px; border-radius: 12px; margin-bottom: 14px; }
+.tabs button { flex: 1 1 auto; min-width: 80px; padding: 10px; background: none; border: none; color: var(--text-dim); font-weight: 700; font-size: 0.84rem; border-radius: 9px; cursor: pointer; font-family: inherit; white-space: nowrap; }
 .tabs button.active { background: var(--surface); color: var(--accent); }
 
 /* Modal — fullscreen no celular */

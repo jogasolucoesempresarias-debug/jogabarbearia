@@ -538,7 +538,16 @@ def cli_update(cid):
 @app.route('/api/clientes/<int:cid>', methods=['DELETE'])
 @login_required
 def cli_delete(cid):
-    execute("UPDATE clientes SET ativo=false WHERE id=%s", (cid,))
+    """Exclui o cliente de vez — só se ele não tiver lançamentos/histórico (comanda, assinatura
+    ou agendamento não-cancelado). Caso contrário bloqueia, pra não apagar histórico do caixa."""
+    tem = scalar("""SELECT 1 WHERE
+        EXISTS (SELECT 1 FROM comandas    WHERE cliente_id=%s)
+     OR EXISTS (SELECT 1 FROM assinaturas WHERE cliente_id=%s)
+     OR EXISTS (SELECT 1 FROM agendamentos WHERE cliente_id=%s AND status<>'cancelado')
+    """, (cid, cid, cid))
+    if tem:
+        return jsonify({'ok': False, 'error': 'Cliente tem histórico (comandas, assinaturas ou agenda) e não pode ser excluído'}), 409
+    execute("DELETE FROM clientes WHERE id=%s", (cid,))
     return jsonify({'ok': True})
 
 

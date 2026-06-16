@@ -13,8 +13,8 @@
   .qr-cartaz { background:#fff; color:#0a0e17; border-radius:14px; padding:22px 18px; text-align:center; margin:14px 0; }
   .qr-cartaz .qr-titulo { font-size:1.25rem; font-weight:700; }
   .qr-cartaz .qr-sub { color:#475569; font-size:0.9rem; margin:4px 0 16px; }
-  .qr-cartaz .qrbox { display:inline-block; padding:10px; background:#fff; border-radius:10px; }
-  .qr-cartaz .qrbox img, .qr-cartaz .qrbox canvas { display:block; }
+  .qr-cartaz .qrbox { display:inline-block; padding:10px; background:#fff; border-radius:10px; max-width:100%; }
+  .qr-cartaz .qrbox img, .qr-cartaz .qrbox canvas { display:block; max-width:100%; height:auto; }
   .qr-cartaz .qr-link { margin-top:14px; font-family:'JetBrains Mono',monospace; font-size:0.78rem; color:#64748b; word-break:break-all; }
   @media print {
     body * { visibility:hidden; }
@@ -85,7 +85,7 @@ async function render() {
         <button class="btn btn-primary btn-block" onclick="window.print()">🖨️ Imprimir cartaz</button>
       </div>`;
     const box = document.getElementById('qrbox'); box.innerHTML = '';
-    new QRCode(box, { text: url, width: 220, height: 220, colorDark: '#0a0e17', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
+    new QRCode(box, { text: url, width: 200, height: 200, colorDark: '#0a0e17', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
   } else {
     CFG = (await api('/api/config')).config;
     const dias = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
