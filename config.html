@@ -9,17 +9,28 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/app.css">
 <style>
-  /* Cartaz do QR de cadastro */
-  .qr-cartaz { background:#fff; color:#0a0e17; border-radius:14px; padding:22px 18px; text-align:center; margin:14px 0; }
-  .qr-cartaz .qr-titulo { font-size:1.25rem; font-weight:700; }
-  .qr-cartaz .qr-sub { color:#475569; font-size:0.9rem; margin:4px 0 16px; }
-  .qr-cartaz .qrbox { display:inline-block; padding:10px; background:#fff; border-radius:10px; max-width:100%; }
+  /* Cartaz do QR de cadastro — bonito na tela e na impressão (PDF) */
+  .qr-cartaz { position:relative; background:#fff; color:#0f172a; border-radius:20px; padding:30px 24px 22px; text-align:center; margin:14px 0; overflow:hidden; box-shadow:0 12px 34px rgba(0,0,0,0.28); }
+  .qr-cartaz .qr-bar { position:absolute; top:0; left:0; right:0; height:8px; }                 /* cor da marca (inline) */
+  .qr-cartaz .qr-mono { width:56px; height:56px; border-radius:16px; margin:8px auto 14px; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:1.55rem; box-shadow:0 8px 18px rgba(15,23,42,0.22); }
+  .qr-cartaz .qr-titulo { font-size:1.45rem; font-weight:800; letter-spacing:-0.01em; line-height:1.15; }
+  .qr-cartaz .qr-sub { color:#64748b; font-size:0.92rem; margin:6px 0 20px; }
+  .qr-cartaz .qr-frame { display:inline-block; padding:16px; background:#fff; border:1px solid #e6eaf0; border-radius:18px; box-shadow:0 4px 16px rgba(15,23,42,0.08); max-width:100%; }
+  .qr-cartaz .qrbox { display:inline-block; line-height:0; }
   .qr-cartaz .qrbox img, .qr-cartaz .qrbox canvas { display:block; max-width:100%; height:auto; }
-  .qr-cartaz .qr-link { margin-top:14px; font-family:'JetBrains Mono',monospace; font-size:0.78rem; color:#64748b; word-break:break-all; }
+  .qr-cartaz .qr-instr { margin-top:18px; font-size:0.95rem; font-weight:600; color:#334155; }
+  .qr-cartaz .qr-link { margin-top:6px; font-family:'JetBrains Mono',monospace; font-size:0.74rem; color:#94a3b8; word-break:break-all; }
+  .qr-cartaz .qr-rodape { margin-top:20px; padding-top:14px; border-top:1px solid #f1f5f9; font-size:0.64rem; letter-spacing:0.1em; text-transform:uppercase; color:#cbd5e1; font-weight:700; }
   @media print {
+    @page { margin:14mm; }
     body * { visibility:hidden; }
     #qr-cartaz, #qr-cartaz * { visibility:visible; }
-    #qr-cartaz { position:absolute; left:0; top:0; width:100%; margin:0; box-shadow:none; }
+    #qr-cartaz { position:absolute; left:50%; top:0; transform:translateX(-50%); width:auto; max-width:540px; margin:0; box-shadow:none; border:1px solid #e6eaf0; }
+    #qr-cartaz .qr-mono { width:64px; height:64px; font-size:1.8rem; }
+    #qr-cartaz .qr-titulo { font-size:2.1rem; }
+    #qr-cartaz .qr-sub { font-size:1.1rem; }
+    #qr-cartaz .qr-instr { font-size:1.1rem; }
+    #qr-cartaz .qrbox img, #qr-cartaz .qrbox canvas { width:300px; height:300px; image-rendering:pixelated; }
   }
 </style>
 </head>
@@ -73,19 +84,27 @@ async function render() {
   } else if (ATUAL==='qr') {
     CFG = (await api('/api/config')).config;
     const url = location.origin + '/cadastro';
+    const nome = CFG.marca_nome || 'Barbearia';
+    const cor = CFG.marca_cor || '#38bdf8';
+    const inicial = escapeHtml(nome.trim().charAt(0).toUpperCase() || 'B');
+    const urlBonita = escapeHtml(url.replace(/^https?:\/\//, ''));
     p.innerHTML = `<div class="card">
         <div class="section-title" style="margin-top:0">QR de autocadastro</div>
         <div class="hint" style="margin-bottom:6px">O cliente aponta a câmera, preenche nome e telefone, e o cadastro aparece em <strong>Clientes</strong> aguardando sua aprovação. Imprima e deixe no balcão/espelho.</div>
         <div class="qr-cartaz" id="qr-cartaz">
-          <div class="qr-titulo">${escapeHtml(CFG.marca_nome||'Barbearia')}</div>
-          <div class="qr-sub">Aponte a câmera e faça seu cadastro</div>
-          <div class="qrbox" id="qrbox"></div>
-          <div class="qr-link">${escapeHtml(url)}</div>
+          <div class="qr-bar" style="background:${cor}"></div>
+          <div class="qr-mono" style="background:${cor}">${inicial}</div>
+          <div class="qr-titulo">${escapeHtml(nome)}</div>
+          <div class="qr-sub">Cadastre-se em segundos e agilize seu atendimento</div>
+          <div class="qr-frame"><div class="qrbox" id="qrbox"></div></div>
+          <div class="qr-instr">📷 Aponte a câmera do celular para o código</div>
+          <div class="qr-link">${urlBonita}</div>
+          <div class="qr-rodape">JOGA · Soluções Empresariais</div>
         </div>
         <button class="btn btn-primary btn-block" onclick="window.print()">🖨️ Imprimir cartaz</button>
       </div>`;
     const box = document.getElementById('qrbox'); box.innerHTML = '';
-    new QRCode(box, { text: url, width: 200, height: 200, colorDark: '#0a0e17', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
+    new QRCode(box, { text: url, width: 220, height: 220, colorDark: '#0f172a', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
   } else {
     CFG = (await api('/api/config')).config;
     const dias = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
