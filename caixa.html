@@ -64,8 +64,16 @@ async function carregar() {
         <div style="display:flex;gap:8px;align-items:center"><div class="ri-right">${money(m.valor)}</div><button class="btn btn-sm btn-primary" onclick="baixar(${m.id})">Receber</button></div></div>`).join('') || '<div class="empty">Nada previsto.</div>';
     document.getElementById('movs').innerHTML = movs.filter(m=>m.status==='pago').map(m=>`
       <div class="row-item"><div><div class="ri-main">${escapeHtml(m.descricao)}</div><div class="ri-sub">${escapeHtml(m.forma_pagamento||'')} · ${m.origem}</div></div>
-        <div class="ri-right ${m.tipo==='receita'?'pos':'neg'}" style="color:${m.tipo==='receita'?'var(--green)':'var(--red)'}">${m.tipo==='receita'?'+':'−'}${money(m.valor)}</div></div>`).join('') || '<div class="empty">Sem lançamentos.</div>';
+        <div style="display:flex;gap:10px;align-items:center">
+          <div class="ri-right ${m.tipo==='receita'?'pos':'neg'}" style="color:${m.tipo==='receita'?'var(--green)':'var(--red)'}">${m.tipo==='receita'?'+':'−'}${money(m.valor)}</div>
+          ${m.origem==='manual'?`<button class="btn btn-sm btn-danger" onclick="excluir(${m.id})">×</button>`:''}
+        </div></div>`).join('') || '<div class="empty">Sem lançamentos.</div>';
   } catch (e) { toast(e.message, 'err'); }
+}
+async function excluir(id) {
+  if (!confirm('Excluir este lançamento manual do caixa?')) return;
+  try { await api('/api/movimentos/'+id, { method:'DELETE' }); toast('Lançamento excluído.', 'ok'); carregar(); }
+  catch (e) { toast(e.message, 'err'); }
 }
 async function baixar(id) {
   try { await api('/api/movimentos/'+id+'/pagar', { method:'POST', body:{} }); toast('Recebido!', 'ok'); carregar(); }

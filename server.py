@@ -823,6 +823,18 @@ def comandas_abertas():
     return jsonify({'ok': True, 'rows': rows})
 
 
+@app.route('/api/comandas/fechadas')
+@login_required
+def comandas_fechadas():
+    """Atendimentos fechados de um dia (default hoje) — para o 'cancelar atendimento'."""
+    d = parse_date(request.args.get('data'), date.today())
+    rows = q_all("""SELECT co.*, c.nome AS cliente_nome, p.nome AS prof_nome
+                    FROM comandas co LEFT JOIN clientes c ON c.id=co.cliente_id
+                    LEFT JOIN profissionais p ON p.id=co.profissional_id
+                    WHERE co.status='fechada' AND co.fechada_em::date=%s ORDER BY co.fechada_em DESC""", (d,))
+    return jsonify({'ok': True, 'rows': rows})
+
+
 @app.route('/api/comandas/<int:cid>/itens', methods=['POST'])
 @login_required
 def comanda_add_item(cid):
@@ -888,7 +900,16 @@ def comanda_fechar(cid):
 @app.route('/api/comandas/<int:cid>/cancelar', methods=['POST'])
 @login_required
 def comanda_cancelar(cid):
-    execute("UPDATE comandas SET status='cancelada' WHERE id=%s AND status='aberta'", (cid,))
+    """Cancela a comanda. Se ela já estava FECHADA (atendimento desfeito), também tira a receita
+    do caixa e devolve o agendamento para 'agendado' (pra poder refazer pela Agenda)."""
+    com = q_one("SELECT status, agendamento_id FROM comandas WHERE id=%s", (cid,))
+    if not com or com['status'] == 'cancelada':
+        return jsonify({'ok': True})
+    if com['status'] == 'fechada':
+        execute("DELETE FROM movimentos WHERE origem='comanda' AND ref_id=%s", (cid,))
+        if com['agendamento_id']:
+            execute("UPDATE agendamentos SET status='agendado' WHERE id=%s", (com['agendamento_id'],))
+    execute("UPDATE comandas SET status='cancelada' WHERE id=%s", (cid,))
     return jsonify({'ok': True})
 
 
@@ -950,6 +971,11 @@ def assin_update(aid):
     if d.get('status') in ('ativa', 'pausada', 'cancelada'):
         fim = ", data_fim=CURRENT_DATE" if d['status'] == 'cancelada' else ""
         execute(f"UPDATE assinaturas SET status=%s{fim} WHERE id=%s", (d['status'], aid))
+        # Cancelar a assinatura desfaz os lançamentos dela no caixa (a 1ª mensalidade já recebida
+        # + as cobranças futuras previstas). O "desfazer" da assinatura mora aqui, na origem —
+        # no Caixa só se exclui o que é manual.
+        if d['status'] == 'cancelada':
+            execute("DELETE FROM movimentos WHERE origem='assinatura' AND ref_id=%s", (aid,))
     return jsonify({'ok': True})
 
 
@@ -1020,6 +1046,16 @@ def mov_create():
 @app.route('/api/movimentos/<int:mid>', methods=['DELETE'])
 @login_required
 def mov_delete(mid):
+    """Exclui um lançamento do caixa, mantendo as origens consistentes:
+       - se veio de uma comanda fechada → cancela a comanda (DRE/comissão leem comanda_itens das
+         comandas fechadas; sem isso o valor sairia do caixa mas continuaria no DRE);
+       - se é a despesa de uma comissão fechada → desfaz o registro pago (volta a ficar pendente)."""
+    m = q_one("SELECT origem, ref_id FROM movimentos WHERE id=%s", (mid,))
+    if not m:
+        return jsonify({'ok': True})
+    if m['origem'] == 'comanda' and m['ref_id']:
+        execute("UPDATE comandas SET status='cancelada' WHERE id=%s", (m['ref_id'],))
+    execute("DELETE FROM comissoes_pagas WHERE movimento_id=%s", (mid,))
     execute("DELETE FROM movimentos WHERE id=%s", (mid,))
     return jsonify({'ok': True})
 

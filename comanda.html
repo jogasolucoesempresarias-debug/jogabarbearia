@@ -28,19 +28,42 @@ async function init() {
 }
 
 async function listarAbertas() {
-  document.getElementById('titulo').textContent = 'Comandas abertas';
+  document.getElementById('titulo').textContent = 'Comandas';
   try {
-    const { rows } = await api('/api/comandas/abertas');
-    document.getElementById('sub').textContent = rows.length + ' aberta(s)';
+    const [abertas, fechadas] = [
+      (await api('/api/comandas/abertas')).rows,
+      (await api('/api/comandas/fechadas')).rows,
+    ];
+    document.getElementById('sub').textContent = abertas.length + ' aberta(s)';
     const cont = document.getElementById('conteudo');
-    if (!rows.length) { cont.innerHTML = '<div class="empty">Nenhuma comanda aberta.<br><span class="muted">Abra pela Agenda (atender / walk-in).</span></div>'; return; }
-    cont.innerHTML = '<div class="list">' + rows.map(c => `
-      <a class="row-item" href="/comanda?id=${c.id}">
-        <div><div class="ri-main">${escapeHtml(c.cliente_nome || 'Walk-in')}</div>
-          <div class="ri-sub">${escapeHtml(c.prof_nome || '')} · #${c.id}</div></div>
-        <div class="ri-right">${money(c.valor_total)}</div>
-      </a>`).join('') + '</div>';
+    let html = '';
+    html += '<div class="section-title" style="margin-top:0">Abertas</div>';
+    html += abertas.length
+      ? '<div class="list">' + abertas.map(c => `
+          <a class="row-item" href="/comanda?id=${c.id}">
+            <div><div class="ri-main">${escapeHtml(c.cliente_nome || 'Walk-in')}</div>
+              <div class="ri-sub">${escapeHtml(c.prof_nome || '')} · #${c.id}</div></div>
+            <div class="ri-right">${money(c.valor_total)}</div>
+          </a>`).join('') + '</div>'
+      : '<div class="empty">Nenhuma comanda aberta.<br><span class="muted">Abra pela Agenda (atender / walk-in).</span></div>';
+    if (fechadas.length) {
+      html += '<div class="section-title">Atendimentos de hoje</div><div class="list">' + fechadas.map(c => `
+        <div class="row-item">
+          <div><div class="ri-main">${escapeHtml(c.cliente_nome || 'Walk-in')}</div>
+            <div class="ri-sub">${escapeHtml(c.prof_nome || '')} · #${c.id} · ${escapeHtml(c.forma_pagamento || '')}</div></div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <div class="ri-right">${money(c.valor_total)}</div>
+            <button class="btn btn-sm btn-danger" onclick="cancelarAtendimento(${c.id})">cancelar</button>
+          </div>
+        </div>`).join('') + '</div>';
+    }
+    cont.innerHTML = html;
   } catch (e) { toast(e.message, 'err'); }
+}
+async function cancelarAtendimento(id) {
+  if (!confirm('Cancelar este atendimento? A receita sai do caixa e o horário volta para a agenda.')) return;
+  try { await api('/api/comandas/'+id+'/cancelar', { method:'POST' }); toast('Atendimento cancelado.', 'ok'); listarAbertas(); }
+  catch (e) { toast(e.message, 'err'); }
 }
 
 async function abrirComanda() {
