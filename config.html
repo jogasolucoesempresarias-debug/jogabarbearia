@@ -8,6 +8,20 @@
 <link rel="manifest" href="/manifest.json">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/app.css">
+<style>
+  /* Cartaz do QR de cadastro */
+  .qr-cartaz { background:#fff; color:#0a0e17; border-radius:14px; padding:22px 18px; text-align:center; margin:14px 0; }
+  .qr-cartaz .qr-titulo { font-size:1.25rem; font-weight:700; }
+  .qr-cartaz .qr-sub { color:#475569; font-size:0.9rem; margin:4px 0 16px; }
+  .qr-cartaz .qrbox { display:inline-block; padding:10px; background:#fff; border-radius:10px; }
+  .qr-cartaz .qrbox img, .qr-cartaz .qrbox canvas { display:block; }
+  .qr-cartaz .qr-link { margin-top:14px; font-family:'JetBrains Mono',monospace; font-size:0.78rem; color:#64748b; word-break:break-all; }
+  @media print {
+    body * { visibility:hidden; }
+    #qr-cartaz, #qr-cartaz * { visibility:visible; }
+    #qr-cartaz { position:absolute; left:0; top:0; width:100%; margin:0; box-shadow:none; }
+  }
+</style>
 </head>
 <body>
 <div class="app">
@@ -18,11 +32,13 @@
     <button data-t="prof" onclick="tab('prof',this)">Barbeiros</button>
     <button data-t="plano" onclick="tab('plano',this)">Planos</button>
     <button data-t="geral" onclick="tab('geral',this)">Geral</button>
+    <button data-t="qr" onclick="tab('qr',this)">QR Cadastro</button>
   </div>
   <div id="painel"><div class="empty">Carregando…</div></div>
 </div>
 
 <script src="/static/app.js"></script>
+<script src="/static/qrcode.min.js"></script>
 <script>
 let ATUAL='serv', SERVICOS=[], CFG={};
 function tab(t,btn){ ATUAL=t; document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); render(); }
@@ -54,6 +70,22 @@ async function render() {
     const { rows } = await api('/api/planos');
     p.innerHTML = `<div class="card"><button class="btn btn-primary btn-block" onclick="novoPlano()">+ Novo plano</button></div>` +
       '<div class="list">'+rows.map(pl=>`<div class="row-item" onclick='editarPlano(${JSON.stringify(pl)})'><div><div class="ri-main">${escapeHtml(pl.nome)}</div><div class="ri-sub">${money(pl.valor_mensal)}/mês · ${(pl.servicos||[]).map(x=>x.nome).join(', ')||'sem serviço'}</div></div><div class="muted">›</div></div>`).join('')+'</div>';
+  } else if (ATUAL==='qr') {
+    CFG = (await api('/api/config')).config;
+    const url = location.origin + '/cadastro';
+    p.innerHTML = `<div class="card">
+        <div class="section-title" style="margin-top:0">QR de autocadastro</div>
+        <div class="hint" style="margin-bottom:6px">O cliente aponta a câmera, preenche nome e telefone, e o cadastro aparece em <strong>Clientes</strong> aguardando sua aprovação. Imprima e deixe no balcão/espelho.</div>
+        <div class="qr-cartaz" id="qr-cartaz">
+          <div class="qr-titulo">${escapeHtml(CFG.marca_nome||'Barbearia')}</div>
+          <div class="qr-sub">Aponte a câmera e faça seu cadastro</div>
+          <div class="qrbox" id="qrbox"></div>
+          <div class="qr-link">${escapeHtml(url)}</div>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="window.print()">🖨️ Imprimir cartaz</button>
+      </div>`;
+    const box = document.getElementById('qrbox'); box.innerHTML = '';
+    new QRCode(box, { text: url, width: 220, height: 220, colorDark: '#0a0e17', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
   } else {
     CFG = (await api('/api/config')).config;
     const dias = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];

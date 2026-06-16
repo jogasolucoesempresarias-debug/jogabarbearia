@@ -19,7 +19,9 @@ const BRL = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' 
 const money = v => BRL.format(Number(v || 0));
 function fmtData(iso) { if (!iso) return '—'; const d = new Date(iso + (iso.length === 10 ? 'T00:00:00' : '')); return d.toLocaleDateString('pt-BR'); }
 function hhmm(t) { return t ? String(t).slice(0, 5) : ''; }
-function hoje() { return new Date().toISOString().slice(0, 10); }
+// Data de hoje em America/Sao_Paulo (igual ao backend). NÃO usar toISOString(): ela devolve UTC
+// e à noite (UTC-3) já marca o dia seguinte. 'en-CA' formata como YYYY-MM-DD.
+function hoje() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date()); }
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 // Máscara de telefone BR: só dígitos → (DD) XXXXX-XXXX (celular) ou (DD) XXXX-XXXX (fixo)

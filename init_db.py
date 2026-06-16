@@ -60,6 +60,10 @@ cur.execute("""
     );
 """)
 cur.execute("CREATE INDEX IF NOT EXISTS ix_clientes_nome ON clientes(nome);")
+# Autocadastro via QR: clientes vindos do QR entram como 'pendente' até a dona aprovar.
+# status='aprovado' (default) faz o backfill dos registros existentes — nada quebra.
+cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS status VARCHAR(10) NOT NULL DEFAULT 'aprovado';")
+cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS origem VARCHAR(12) NOT NULL DEFAULT 'manual';")
 
 # ── Serviços ──────────────────────────────────────────────────────────
 cur.execute("""

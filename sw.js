@@ -1,8 +1,8 @@
 /* JOGA Barbearia — Service Worker (PWA)
    Estratégia NETWORK-FIRST: sempre busca a versão nova da rede e atualiza o cache;
    o cache só é usado como fallback quando está offline. Evita servir JS/CSS velho. */
-const CACHE = 'barbearia-v2';
-const ASSETS = ['/static/app.css', '/static/app.js', '/static/icon.svg'];
+const CACHE = 'barbearia-v3';
+const ASSETS = ['/static/app.css', '/static/app.js', '/static/icon.svg', '/static/qrcode.min.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).catch(() => {}));

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Cadastro de cliente</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2338bdf8'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-size='18' font-weight='700' text-anchor='middle' fill='%230a0e17'%3EB%3C/text%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0a0e17;--surface:#111827;--surface2:#1a2235;--border:#1e293b;--text:#e2e8f0;--text-dim:#94a3b8;--accent:#38bdf8;--accent2:#818cf8;--red:#f87171;--green:#34d399; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:34px 26px; width:100%; max-width:380px; box-shadow:0 20px 60px rgba(0,0,0,0.4); }
+  .logo { width:56px; height:56px; border-radius:14px; background:linear-gradient(135deg,var(--accent),var(--accent2)); display:flex; align-items:center; justify-content:center; font-size:1.7rem; font-weight:700; color:var(--bg); margin:0 auto 16px; }
+  h1 { font-size:1.3rem; font-weight:700; text-align:center; background:linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .subtitle { text-align:center; color:var(--text-dim); font-size:0.82rem; margin:4px 0 24px; }
+  .field { margin-bottom:14px; }
+  .field label { display:block; font-size:0.72rem; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em; font-weight:600; }
+  .field input { width:100%; padding:13px 14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; color:var(--text); font-family:inherit; font-size:16px; }
+  .field input:focus { outline:none; border-color:var(--accent); }
+  .hp { position:absolute; left:-9999px; width:1px; height:1px; opacity:0; }
+  .btn { width:100%; padding:14px; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:var(--bg); font-weight:700; border:none; border-radius:10px; cursor:pointer; font-size:0.95rem; font-family:inherit; margin-top:6px; }
+  .btn:disabled { opacity:0.6; }
+  .erro { background:rgba(248,113,113,0.1); border:1px solid rgba(248,113,113,0.3); color:var(--red); padding:10px 12px; border-radius:10px; font-size:0.82rem; margin-bottom:14px; display:none; }
+  .erro.show { display:block; }
+  .ok-box { text-align:center; }
+  .ok-box .check { font-size:3rem; margin-bottom:10px; }
+  .ok-box h2 { font-size:1.15rem; margin-bottom:8px; }
+  .ok-box p { color:var(--text-dim); font-size:0.9rem; }
+  .footer { text-align:center; margin-top:20px; color:var(--text-dim); font-size:0.7rem; font-family:'JetBrains Mono',monospace; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">B</div>
+    <h1 id="marca">Barbearia</h1>
+    <p class="subtitle">Faça seu cadastro 💈</p>
+
+    <div id="form-wrap">
+      <div id="erro" class="erro"></div>
+      <form id="f" autocomplete="on">
+        <div class="field"><label>Nome *</label><input type="text" id="nome" required autofocus style="text-transform:uppercase" autocomplete="name"></div>
+        <div class="field"><label>Telefone *</label><input type="tel" id="telefone" required inputmode="numeric" placeholder="(34) 99943-4613" autocomplete="tel"></div>
+        <input type="text" id="empresa" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+        <button type="submit" class="btn" id="b">Cadastrar</button>
+      </form>
+    </div>
+
+    <div id="ok" class="ok-box" style="display:none">
+      <div class="check">✅</div>
+      <h2>Cadastro enviado!</h2>
+      <p>Pronto — assim que confirmarem, você já estará na lista. Pode mostrar pra recepção. 💈</p>
+    </div>
+
+    <div class="footer">JOGA Soluções Empresariais</div>
+  </div>
+<script>
+  // Máscara de telefone BR (cópia enxuta do app.js — esta página é pública e não carrega o app.js)
+  function maskTelefone(v) {
+    const d = String(v || '').replace(/\D/g, '').slice(0, 11), len = d.length;
+    if (len === 0) return '';
+    if (len < 3) return '(' + d;
+    const ddd = d.slice(0, 2), resto = d.slice(2);
+    if (len <= 6) return `(${ddd}) ${resto}`;
+    if (len <= 10) return `(${ddd}) ${resto.slice(0, 4)}-${resto.slice(4)}`;
+    return `(${ddd}) ${resto.slice(0, 5)}-${resto.slice(5)}`;
+  }
+  const nome = document.getElementById('nome'), tel = document.getElementById('telefone');
+  nome.addEventListener('input', () => nome.value = nome.value.toUpperCase());
+  tel.addEventListener('input', () => tel.value = maskTelefone(tel.value));
+
+  // Marca da instância
+  fetch('/api/cadastro/contexto').then(r => r.json()).then(j => {
+    if (j && j.ok) {
+      document.getElementById('marca').textContent = j.marca_nome || 'Barbearia';
+      document.title = (j.marca_nome || 'Barbearia') + ' — Cadastro';
+    }
+  }).catch(() => {});
+
+  const f = document.getElementById('f'), erro = document.getElementById('erro'), b = document.getElementById('b');
+  f.addEventListener('submit', async e => {
+    e.preventDefault(); erro.classList.remove('show'); b.disabled = true; b.textContent = 'Enviando...';
+    try {
+      const r = await fetch('/api/cadastro/publico', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nome: nome.value, telefone: tel.value, empresa: document.getElementById('empresa').value }) });
+      const j = await r.json();
+      if (j.ok) { document.getElementById('form-wrap').style.display = 'none'; document.getElementById('ok').style.display = 'block'; }
+      else { erro.textContent = j.error || 'Não foi possível cadastrar.'; erro.classList.add('show'); b.disabled = false; b.textContent = 'Cadastrar'; }
+    } catch { erro.textContent = 'Erro de conexão. Tente de novo.'; erro.classList.add('show'); b.disabled = false; b.textContent = 'Cadastrar'; }
+  });
+</script>
+</body>
+</html>

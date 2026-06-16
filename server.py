@@ -92,6 +92,36 @@ def cfg():
     return q_one("SELECT * FROM configuracoes WHERE id=1") or {}
 
 
+def telefone_existe(telefone, excluir_id=None):
+    """True se já há cliente ativo com o mesmo telefone (comparando só os dígitos).
+    excluir_id ignora o próprio cliente (usado na edição)."""
+    digitos = ''.join(ch for ch in str(telefone or '') if ch.isdigit())
+    if not digitos:
+        return False
+    if excluir_id:
+        return bool(scalar("""SELECT 1 FROM clientes WHERE ativo
+            AND regexp_replace(telefone, '\\D', '', 'g') = %s AND id <> %s LIMIT 1""", (digitos, excluir_id)))
+    return bool(scalar("""SELECT 1 FROM clientes WHERE ativo
+        AND regexp_replace(telefone, '\\D', '', 'g') = %s LIMIT 1""", (digitos,)))
+
+
+# Rate-limit simples em memória (instância única por cliente): {ip: [timestamps]}.
+# Reseta em redeploy — suficiente p/ conter abuso do cadastro público sem captcha.
+_RATE = {}
+
+
+def rate_limit_ok(ip, maximo=5, janela_seg=600):
+    import time
+    agora = time.time()
+    hist = [t for t in _RATE.get(ip, []) if agora - t < janela_seg]
+    if len(hist) >= maximo:
+        _RATE[ip] = hist
+        return False
+    hist.append(agora)
+    _RATE[ip] = hist
+    return True
+
+
 def cobertura_plano(cliente_id, servico_id, d: date):
     """Retorna (coberto:bool, assinatura_id|None) p/ um serviço de um cliente numa data."""
     if not cliente_id:
@@ -217,6 +247,41 @@ def trocar_senha_page():
     if 'user_id' not in session:
         return redirect('/login')
     return send_from_directory(BASE_DIR, 'trocar-senha.html')
+
+
+# ── Autocadastro público (QR) — SEM login, a única porta pública do sistema ──
+@app.route('/cadastro', methods=['GET'])
+def cadastro_page():
+    return send_from_directory(BASE_DIR, 'cadastro.html')
+
+
+@app.route('/api/cadastro/contexto')
+def cadastro_contexto():
+    """Marca da barbearia p/ a página pública ficar com a identidade da instância. Read-only."""
+    c = cfg()
+    return jsonify({'ok': True, 'marca_nome': c.get('marca_nome') or 'Barbearia',
+                    'marca_cor': c.get('marca_cor') or '#38bdf8'})
+
+
+@app.route('/api/cadastro/publico', methods=['POST'])
+def cadastro_publico():
+    """Cliente se cadastra sozinho via QR. Entra como 'pendente' até a dona aprovar."""
+    d = request.get_json() or {}
+    if (d.get('empresa') or '').strip():          # honeypot: bot preencheu → finge sucesso e ignora
+        return jsonify({'ok': True})
+    if not rate_limit_ok(request.remote_addr or 'desconhecido'):
+        return jsonify({'ok': False, 'error': 'Muitos cadastros. Tente de novo em alguns minutos.'}), 429
+    nome = (d.get('nome') or '').strip().upper()
+    telefone = (d.get('telefone') or '').strip()
+    if not nome:
+        return jsonify({'ok': False, 'error': 'Informe seu nome'}), 400
+    if not telefone:
+        return jsonify({'ok': False, 'error': 'Informe seu telefone'}), 400
+    if telefone_existe(telefone):
+        return jsonify({'ok': False, 'error': 'Este telefone já está cadastrado'}), 409
+    execute("INSERT INTO clientes (nome, telefone, status, origem) VALUES (%s,%s,'pendente','qr')",
+            (nome, telefone))
+    return jsonify({'ok': True})
 
 
 @app.route('/<path:rota>')
@@ -415,12 +480,13 @@ def cli_list():
     if busca:
         rows = q_all("""SELECT c.*, p.nome AS prof_nome FROM clientes c
                         LEFT JOIN profissionais p ON p.id=c.profissional_fixo_id
-                        WHERE c.ativo AND (c.nome ILIKE %s OR c.telefone ILIKE %s) ORDER BY c.nome LIMIT 50""",
+                        WHERE c.ativo AND c.status='aprovado' AND (c.nome ILIKE %s OR c.telefone ILIKE %s)
+                        ORDER BY c.nome LIMIT 50""",
                      (f"%{busca}%", f"%{busca}%"))
     else:
         rows = q_all("""SELECT c.*, p.nome AS prof_nome FROM clientes c
                         LEFT JOIN profissionais p ON p.id=c.profissional_fixo_id
-                        WHERE c.ativo ORDER BY c.nome LIMIT 200""")
+                        WHERE c.ativo AND c.status='aprovado' ORDER BY c.nome LIMIT 200""")
     return jsonify({'ok': True, 'rows': rows})
 
 
@@ -443,6 +509,8 @@ def cli_create():
     nome = (d.get('nome') or '').strip().upper()
     if not nome:
         return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
+    if telefone_existe(d.get('telefone')):
+        return jsonify({'ok': False, 'error': 'Já existe cliente com este telefone'}), 409
     tipo = d.get('tipo') if d.get('tipo') in ('fixo', 'universal') else 'universal'
     row = execute("""INSERT INTO clientes (nome, telefone, tipo, profissional_fixo_id, observacoes)
                      VALUES (%s,%s,%s,%s,%s) RETURNING *""",
@@ -458,6 +526,8 @@ def cli_update(cid):
     nome = d.get('nome')
     if nome:
         nome = nome.strip().upper()
+    if telefone_existe(d.get('telefone'), excluir_id=cid):
+        return jsonify({'ok': False, 'error': 'Já existe cliente com este telefone'}), 409
     execute("""UPDATE clientes SET nome=COALESCE(%s,nome), telefone=%s, tipo=COALESCE(%s,tipo),
                profissional_fixo_id=%s, observacoes=%s WHERE id=%s""",
             (nome, d.get('telefone'), d.get('tipo'), d.get('profissional_fixo_id') or None,
@@ -469,6 +539,29 @@ def cli_update(cid):
 @login_required
 def cli_delete(cid):
     execute("UPDATE clientes SET ativo=false WHERE id=%s", (cid,))
+    return jsonify({'ok': True})
+
+
+# ── Fila de aprovação dos autocadastros (QR) ──────────────────────────
+@app.route('/api/clientes/pendentes')
+@login_required
+def cli_pendentes():
+    rows = q_all("""SELECT id, nome, telefone, criado_em FROM clientes
+                    WHERE status='pendente' AND ativo ORDER BY criado_em DESC""")
+    return jsonify({'ok': True, 'rows': rows})
+
+
+@app.route('/api/clientes/<int:cid>/aprovar', methods=['POST'])
+@login_required
+def cli_aprovar(cid):
+    execute("UPDATE clientes SET status='aprovado' WHERE id=%s AND status='pendente'", (cid,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/clientes/<int:cid>/recusar', methods=['POST'])
+@login_required
+def cli_recusar(cid):
+    execute("UPDATE clientes SET ativo=false WHERE id=%s AND status='pendente'", (cid,))
     return jsonify({'ok': True})
 
 

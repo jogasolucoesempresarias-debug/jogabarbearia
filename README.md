@@ -1,50 +1,93 @@
 # JOGA Barbearia
 
-SaaS de gestão para barbearia — **mobile-first + PWA**. Agenda interna, comanda (serviços +
-produtos), plano de assinatura dos clientes, comissão dos barbeiros e caixa.
+SaaS de gestão para barbearia — **mobile-first + PWA**. Agenda interna, comanda (serviços + produtos),
+planos de assinatura, comissão dos barbeiros, caixa, despesas/impostos e DRE.
 
-Construído sobre a espinha do **Gestão JOGA** (auth, financeiro, recorrência, deploy), como produto
-vertical da JOGA Soluções Empresariais. Instância própria por cliente.
+Construído sobre a espinha do **Gestão JOGA** (auth, financeiro, deploy), como produto vertical da
+JOGA Soluções Empresariais. **Instância própria por cliente** (banco/subdomínio próprios).
 
 ## Stack
 Flask + Waitress · PostgreSQL · HTML/CSS/JS puro (mobile-first) + PWA · Docker Swarm/Traefik/GHCR.
+Fuso horário **America/Sao_Paulo** (app via `TZ` e conexão do banco via `options`).
 
-## Perfis
-- **dono** — admin, configura tudo, relatórios
-- **caixa/recepção** — agenda, comanda, caixa
-- **barbeiro** — vê a própria agenda + comissão
+## Perfis (RBAC)
+- **dono** — acesso total: agenda, comanda, caixa, despesas, comissões, DRE e configurações.
+- **caixa/recepção** — operação: agenda, comanda, caixa, despesas, etc.
+- **barbeiro** — **só** a própria agenda (somente leitura) + a própria comissão. Bloqueado de verdade
+  no backend (`before_request`): não acessa caixa/financeiro/comandas/outros nem digitando a URL.
+- **suporte/master (JOGA)** — login invisível por env (`SUPORTE_EMAIL`/`SUPORTE_SENHA`), fora do
+  banco, role dono. Só existe se as envs estiverem setadas. Para configurar instâncias em produção.
 
 ## Conceitos
-- **Comanda** é o pivô: ao fechar vira receita no caixa, gera comissão (45% por serviço, configurável)
-  e respeita o **plano** (assinante coberto não paga avulso, mas o barbeiro ganha comissão sobre tabela).
-- **Plano de assinatura** (configurável: valor, serviços, dias, vencimento 10/30) — assinante paga
-  **no balcão** (manual). *(A mensalidade que a JOGA cobra da barbearia é outra coisa, fica no Gestão JOGA.)*
-- **Agenda**: slots de 30min, horário por dia, walk-in, bloqueio/folga, cancelamento sem taxa.
+- **Comanda** é o pivô: ao fechar vira **receita no caixa**, registra a produção e respeita o **plano**
+  (assinante atendido em dia coberto sai R$0; fora dos dias do plano vira cliente normal/avulso).
+- **Comissão**:
+  - **Avulso**: 45% (config por barbeiro) sobre o valor do serviço executado.
+  - **Assinante (POOL)**: 45% (`config.comissao_padrao`) da **arrecadação dos planos** no período,
+    rateado pela **produção** (1 visita = 1 atendimento, mesmo com vários serviços). A **dona não
+    recebe comissão** (`recebe_comissao=false`); a fração dos atendimentos dela fica com a casa.
+  - **Fechar/pagar comissão** por barbeiro/quinzena → vira **despesa "Comissões" no caixa** e marca
+    pago/pendente (tabela `comissoes_pagas`). Filtro por barbeiro + "fechar todos os pendentes".
+- **Planos de assinatura** (configuráveis: valor, serviços, dias, vencimento 10/30, múltiplos):
+  na criação **cobra a 1ª mensalidade na hora** (cai no caixa hoje); a **próxima** vence no dia
+  10/30 escolhido, **a partir do mês seguinte**; "Gerar cobranças do mês" cria as próximas como
+  "a receber" (idempotente, via `proxima_cobranca`).
+- **Despesas e Impostos**: lançamento com **categoria** (incl. Impostos), resumo por categoria, e
+  **despesas fixas recorrentes** (aluguel/imposto/internet) com "Gerar despesas do mês".
+- **Caixa**: fechamento do dia por forma de pagamento (Dinheiro/Pix/Cartão) + a receber/lançamentos.
+- **DRE/Resultado**: receitas (serviços, produtos, assinaturas) − despesas (por categoria, incl.
+  comissões pagas) = resultado do mês.
+- **Agenda**: slots de 30min, multi-serviço (soma a duração), walk-in, bloqueio/folga, cancelamento
+  sem taxa, horário por dia.
+- **Cadastro de cliente**: telefone com máscara `(DD) 9XXXX-XXXX` e nome em MAIÚSCULO.
+
+## Variáveis de ambiente (`.env` / Portainer)
+```
+SECRET_KEY            # chave do Flask
+DB_HOST/PORT/NAME/USER/PASSWORD
+SEED_SENHA_INICIAL    # senha inicial dos usuários semeados (troca no 1º login)
+SUPORTE_EMAIL         # acesso master JOGA (vazio = desativado)
+SUPORTE_SENHA
+```
 
 ## Setup local (dev)
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-# .env: DB_HOST/DB_NAME/DB_PASSWORD
-.\.venv\Scripts\python.exe -X utf8 _create_db.py     # cria o database
-.\.venv\Scripts\python.exe -X utf8 init_db.py        # schema
-.\.venv\Scripts\python.exe -X utf8 seed_barbearia.py # dados pré-configurados
-.\.venv\Scripts\python.exe -X utf8 server.py         # http://localhost:5000
+# copie .env.example para .env e ajuste DB_PASSWORD (e SUPORTE_* se quiser testar o master)
+.\.venv\Scripts\python.exe -X utf8 _create_db.py      # cria o database
+.\.venv\Scripts\python.exe -X utf8 init_db.py         # schema (idempotente)
+.\.venv\Scripts\python.exe -X utf8 seed_barbearia.py  # dados pré-configurados
+$env:PORT="5002"; .\.venv\Scripts\python.exe -X utf8 server.py   # http://localhost:5002
 ```
-Login: `caixa@barbearia.local` / `joga123` (dono@ e `<barbeiro>@barbearia.local` também). Troca de senha no 1º acesso.
+**Logins** (senha `joga123`, troca no 1º acesso): `regiane@barbearia.local` (dona+barbeira, **sem
+comissão**) · `joaovictor@barbearia.local` (barbeiro). `_reset.py` reseta o banco local (dev).
 
-Smoke test da API: `.\.venv\Scripts\python.exe -X utf8 _smoke.py` (limpa o resíduo no fim).
+### Smoke tests (cada um limpa o resíduo no fim)
+- `_smoke.py` — fluxo operacional (cliente, agenda, comanda, caixa, assinatura, comissão)
+- `_smoke_pool.py` — rateio do bolo por visita
+- `_smoke_gestao.py` — timezone, dona fora do rateio, fechar comissão→despesa, DRE
+- `_smoke_despesas.py` — despesas, categorias, fixas (gerar do mês)
+- `_smoke_assinatura.py` — 1ª no caixa hoje + próxima no dia 10/30 do mês seguinte
+- `_teste_completo.py` — bateria ponta a ponta
 
 ## Deploy
-`git push main` → Actions builda e publica no GHCR → no servidor `docker service update --force` +
-`init_db.py` + `seed_barbearia.py`. Stack em `docker-compose.prod.yml` (Traefik → `barbearia.jogasolucoes.com.br`).
+`git push main` → GitHub Actions builda e publica no GHCR → no servidor:
+```bash
+docker service update --image ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:latest --force barbearia_barbearia-app
+docker exec $(docker ps -q -f name=barbearia) python -X utf8 init_db.py     # migrações são aditivas (IF NOT EXISTS)
+```
+Stack em `docker-compose.prod.yml` (Traefik → `barbearia.jogasolucoes.com.br`). Migrações nunca
+destroem dado. Reinstalação limpa (teste): scale 0 → drop/create DB → scale 1 → init_db + seed.
 
 ## Estrutura
 ```
-server.py            # backend (auth, agenda, comanda, assinaturas, caixa, relatórios)
-init_db.py           # schema
-seed_barbearia.py    # dados pré-configurados (serviços, produtos, barbeiros, horários, plano)
-static/app.css|js    # shell mobile-first (bottom-nav)
-agenda|comanda|clientes|assinaturas|caixa|relatorios|config|barbeiro.html
-manifest.json sw.js  # PWA
+server.py            # backend: auth+RBAC, agenda, comanda, assinaturas, despesas, caixa, comissões, DRE
+init_db.py           # schema (idempotente, migrações aditivas)
+seed_barbearia.py    # dados pré-configurados (serviços, produtos, 2 barbeiros, horários, 3 planos)
+static/app.css|js    # shell mobile-first (bottom-nav, máscara telefone, helpers)
+agenda · comanda · clientes · assinaturas · caixa · despesas · relatorios(Comissões) · dre · config · barbeiro .html
+login.html · trocar-senha.html
+manifest.json · sw.js  # PWA (service worker network-first)
+docker-compose.prod.yml · .github/workflows/deploy.yml · Dockerfile
 ```
