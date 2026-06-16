@@ -41,15 +41,15 @@ async function listarAbertas() {
     html += abertas.length
       ? '<div class="list">' + abertas.map(c => `
           <a class="row-item" href="/comanda?id=${c.id}">
-            <div><div class="ri-main">${escapeHtml(c.cliente_nome || 'Walk-in')}</div>
+            <div><div class="ri-main">${escapeHtml(c.cliente_nome || 'Avulso')}</div>
               <div class="ri-sub">${escapeHtml(c.prof_nome || '')} · #${c.id}</div></div>
             <div class="ri-right">${money(c.valor_total)}</div>
           </a>`).join('') + '</div>'
-      : '<div class="empty">Nenhuma comanda aberta.<br><span class="muted">Abra pela Agenda (atender / walk-in).</span></div>';
+      : '<div class="empty">Nenhuma comanda aberta.<br><span class="muted">Abra pela Agenda (atender / sem hora marcada).</span></div>';
     if (fechadas.length) {
       html += '<div class="section-title">Atendimentos de hoje</div><div class="list">' + fechadas.map(c => `
         <div class="row-item">
-          <div><div class="ri-main">${escapeHtml(c.cliente_nome || 'Walk-in')}</div>
+          <div><div class="ri-main">${escapeHtml(c.cliente_nome || 'Avulso')}</div>
             <div class="ri-sub">${escapeHtml(c.prof_nome || '')} · #${c.id} · ${escapeHtml(c.forma_pagamento || '')}</div></div>
           <div style="display:flex;align-items:center;gap:10px">
             <div class="ri-right">${money(c.valor_total)}</div>
@@ -77,7 +77,7 @@ async function abrirComanda() {
       (await api('/api/config')).config.formas_pagamento || ['Dinheiro','Pix','Cartão'],
     ];
     executorId = COM.profissional_id;
-    document.getElementById('titulo').textContent = COM.cliente_nome || 'Walk-in';
+    document.getElementById('titulo').textContent = COM.cliente_nome || 'Avulso';
     document.getElementById('sub').textContent = (COM.prof_nome || '') + ' · comanda #' + COM.id;
     if (COM.status !== 'aberta') { document.getElementById('conteudo').innerHTML = '<div class="empty">Comanda já '+COM.status+'.</div>'; return; }
     render();
