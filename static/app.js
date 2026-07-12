@@ -54,6 +54,7 @@ const NAV_PRIMARIO = [
 ];
 const NAV_MAIS = [
   { href: '/assinaturas', ic: '⭐', label: 'Assinaturas' },
+  { href: '/uso', ic: '📊', label: 'Uso dos Planos' },
   { href: '/despesas', ic: '💸', label: 'Despesas' },
   { href: '/relatorios', ic: '✂️', label: 'Comissões' },
   { href: '/dre', ic: '📈', label: 'Resultado' },

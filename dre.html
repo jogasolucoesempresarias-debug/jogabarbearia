@@ -13,12 +13,35 @@
 <div class="app">
   <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Resultado</h1><div class="sub">Receitas − Despesas (DRE)</div></div></div></div>
 
-  <div class="filters"><div class="field" style="flex:1"><label>Mês</label><input type="month" id="f-mes" onchange="carregar()"></div></div>
+  <div class="seg" id="seg">
+    <button data-modo="mes">Mês</button>
+    <button data-modo="tri">Trimestre</button>
+    <button data-modo="ano">Ano</button>
+    <button data-modo="custom">Período</button>
+  </div>
+  <div class="filters" id="filtro-mes"><div class="field" style="flex:1"><label>Mês</label><input type="month" id="f-mes" onchange="carregar()"></div></div>
+  <div class="filters" id="filtro-custom" style="display:none">
+    <div class="field"><label>De</label><input type="date" id="f-de" onchange="carregar()"></div>
+    <div class="field"><label>Até</label><input type="date" id="f-ate" onchange="carregar()"></div>
+  </div>
 
-  <div class="card kpi" style="text-align:center;padding:24px">
-    <div class="label">Resultado do mês</div>
+  <div class="card kpi" style="text-align:center;padding:22px">
+    <div class="label" id="periodo-lbl">Resultado do mês</div>
     <div class="value" id="resultado" style="font-size:2.2rem">—</div>
     <div class="hint" id="margem"></div>
+    <div class="hint" id="compara" style="margin-top:8px"></div>
+  </div>
+
+  <div class="statrow">
+    <div class="stat"><div class="n" id="k-atend">—</div><div class="l">Atendimentos</div></div>
+    <div class="stat"><div class="n" id="k-ticket">—</div><div class="l">Ticket médio</div></div>
+    <div class="stat"><div class="n" id="k-visitas">—</div><div class="l">Visitas plano</div></div>
+  </div>
+
+  <div class="card" id="card-chart" style="display:none">
+    <div class="label" style="font-size:0.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);font-weight:600">Evolução — últimos 6 meses</div>
+    <div class="chart" id="chart"></div>
+    <div class="chart-legend"><span><i class="rec"></i>Receita</span><span><i class="desp"></i>Despesa</span></div>
   </div>
 
   <div class="section-title">Receitas</div>
@@ -30,41 +53,121 @@
 
 <script src="/static/app.js"></script>
 <script>
+let MODO = 'mes';
 function mesAtual() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; }
-function rangeMes() { const v = document.getElementById('f-mes').value || mesAtual(); const [y,m]=v.split('-').map(Number); const ult=new Date(y,m,0).getDate(); return [`${v}-01`, `${v}-${String(ult).padStart(2,'0')}`]; }
 
-function linha(nome, valor, neg) {
-  return `<div class="row-item"><div class="ri-main">${nome}</div><div class="ri-right" style="color:${neg?'var(--red)':'var(--green)'}">${neg?'−':'+'}${money(valor)}</div></div>`;
+// Retorna [de, ate] conforme o modo selecionado
+function rangeAtual() {
+  if (MODO === 'custom') {
+    const de = document.getElementById('f-de').value, ate = document.getElementById('f-ate').value;
+    return [de || mesAtual()+'-01', ate || hoje()];
+  }
+  const v = document.getElementById('f-mes').value || mesAtual();
+  const [y, m] = v.split('-').map(Number);
+  if (MODO === 'ano') return [`${y}-01-01`, `${y}-12-31`];
+  if (MODO === 'tri') {
+    const qi = Math.floor((m - 1) / 3) * 3 + 1;        // 1,4,7,10
+    const ultDia = new Date(y, qi + 2, 0).getDate();
+    return [`${y}-${String(qi).padStart(2,'0')}-01`, `${y}-${String(qi+2).padStart(2,'0')}-${String(ultDia).padStart(2,'0')}`];
+  }
+  const ult = new Date(y, m, 0).getDate();             // mês
+  return [`${v}-01`, `${v}-${String(ult).padStart(2,'0')}`];
+}
+function rotuloPeriodo() {
+  return { mes: 'Resultado do mês', tri: 'Resultado do trimestre', ano: 'Resultado do ano', custom: 'Resultado do período' }[MODO];
+}
+
+function setModo(modo) {
+  MODO = modo;
+  [...document.querySelectorAll('#seg button')].forEach(b => b.classList.toggle('active', b.dataset.modo === modo));
+  document.getElementById('filtro-custom').style.display = modo === 'custom' ? 'flex' : 'none';
+  document.getElementById('filtro-mes').style.display = modo === 'custom' ? 'none' : 'flex';
+  // só o mês mostra a evolução mensal (série de 6 meses ancorada no mês)
+  document.getElementById('card-chart').style.display = modo === 'mes' ? 'block' : 'none';
+  carregar();
+}
+
+function linha(nome, valor, neg, det) {
+  const id = 'det-' + Math.random().toString(36).slice(2, 8);
+  const temDet = det && det.length;
+  const caret = temDet ? '<span class="caret">›</span> ' : '';
+  const head = `<div class="row-item ${temDet?'exp':''}" ${temDet?`onclick="toggleDet('${id}', this)"`:''}>
+      <div class="ri-main">${caret}${escapeHtml(nome)}</div>
+      <div class="ri-right" style="color:${neg?'var(--red)':'var(--green)'}">${neg?'−':'+'}${money(valor)}</div></div>`;
+  if (!temDet) return head;
+  const sub = det.map(d => `<div class="d-row"><div>${escapeHtml(d.nome)} <span class="d-sub">· ${d.qtd} ${neg?'':'un/atend.'}</span></div><div class="d-val">${money(d.total)}</div></div>`).join('');
+  return head + `<div class="detalhe" id="${id}" style="display:none">${sub}</div>`;
+}
+function toggleDet(id, el) {
+  const d = document.getElementById(id);
+  const open = d.style.display === 'none';
+  d.style.display = open ? 'flex' : 'none';
+  el.classList.toggle('open', open);
 }
 
 async function carregar() {
-  const [de, ate] = rangeMes();
+  const [de, ate] = rangeAtual();
+  document.getElementById('periodo-lbl').textContent = rotuloPeriodo();
   try {
     const j = await api(`/api/relatorios/dre?de=${de}&ate=${ate}`);
     const r = j.receitas;
     let rec = '';
-    if (r.servicos)    rec += linha('Serviços', r.servicos);
-    if (r.produtos)    rec += linha('Produtos', r.produtos);
+    if (r.servicos)    rec += linha('Serviços', r.servicos, false, r.servicos_detalhe);
+    if (r.produtos)    rec += linha('Produtos', r.produtos, false, r.produtos_detalhe);
     if (r.assinaturas) rec += linha('Assinaturas (planos)', r.assinaturas);
     if (r.outras)      rec += linha('Outras receitas', r.outras);
     rec += `<div class="row-item" style="border:2px solid var(--border)"><div class="ri-main"><strong>Total de receitas</strong></div><div class="ri-right" style="color:var(--green)"><strong>${money(r.total)}</strong></div></div>`;
-    document.getElementById('receitas').innerHTML = r.total ? rec : '<div class="empty">Sem receitas no mês.</div>';
+    document.getElementById('receitas').innerHTML = r.total ? rec : '<div class="empty">Sem receitas no período.</div>';
 
-    let desp = j.despesas.map(d=>linha(escapeHtml(d.categoria), d.total, true)).join('');
+    let desp = j.despesas.map(d=>linha(d.categoria, d.total, true)).join('');
     desp += `<div class="row-item" style="border:2px solid var(--border)"><div class="ri-main"><strong>Total de despesas</strong></div><div class="ri-right" style="color:var(--red)"><strong>−${money(j.despesas_total)}</strong></div></div>`;
-    document.getElementById('despesas').innerHTML = j.despesas_total ? desp : '<div class="empty">Sem despesas no mês.</div>';
+    document.getElementById('despesas').innerHTML = j.despesas_total ? desp : '<div class="empty">Sem despesas no período.</div>';
 
     const res = document.getElementById('resultado');
     res.textContent = money(j.resultado);
     res.className = 'value ' + (j.resultado >= 0 ? 'pos' : 'neg');
     const margem = r.total ? (j.resultado / r.total * 100) : 0;
     document.getElementById('margem').textContent = r.total ? `margem ${margem.toFixed(0)}% · receitas ${money(r.total)} − despesas ${money(j.despesas_total)}` : '';
+
+    // KPIs
+    document.getElementById('k-atend').textContent = j.atendimentos ?? '—';
+    document.getElementById('k-ticket').textContent = money(j.ticket_medio);
+    document.getElementById('k-visitas').textContent = j.visitas_plano ?? 0;
+
+    // Comparativo vs período anterior
+    const cmp = j.comparativo;
+    const el = document.getElementById('compara');
+    if (cmp && (cmp.resultado || cmp.receita)) {
+      const diff = j.resultado - cmp.resultado;
+      const pct = cmp.resultado ? (diff / Math.abs(cmp.resultado) * 100) : (j.resultado ? 100 : 0);
+      const cls = diff >= 0 ? 'pos' : 'neg';
+      el.innerHTML = `vs. período anterior: <span class="delta ${cls}">${diff>=0?'▲':'▼'} ${money(Math.abs(diff))} (${pct>=0?'+':''}${pct.toFixed(0)}%)</span>`;
+    } else { el.innerHTML = ''; }
+
+    if (MODO === 'mes') carregarSerie(ate);
   } catch (e) { toast(e.message, 'err'); }
 }
 
+async function carregarSerie(ate) {
+  try {
+    const { serie } = await api(`/api/relatorios/dre-serie?meses=6&ate=${ate}`);
+    const max = Math.max(1, ...serie.map(s => Math.max(s.receita, s.despesa)));
+    const atualYM = ate.slice(0, 7);
+    document.getElementById('chart').innerHTML = serie.map(s => {
+      const hr = Math.round(s.receita / max * 100), hd = Math.round(s.despesa / max * 100);
+      const on = s.competencia === atualYM ? 'on' : '';
+      const tip = `${s.label}: receita ${money(s.receita)} · despesa ${money(s.despesa)} · resultado ${money(s.resultado)}`;
+      return `<div class="chart-col ${on}" title="${tip}" onclick="toast('${tip.replace(/'/g,'')}','ok')">
+        <div class="chart-bars"><div class="bar rec" style="height:${hr}%"></div><div class="bar desp" style="height:${hd}%"></div></div>
+        <div class="cl">${s.label}</div></div>`;
+    }).join('');
+  } catch (e) { /* silencioso: o gráfico é complementar */ }
+}
+
 document.getElementById('f-mes').value = mesAtual();
+document.getElementById('seg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setModo(b.dataset.modo); });
 renderShell('/mais');
-carregar();
+setModo('mes');
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 </body>

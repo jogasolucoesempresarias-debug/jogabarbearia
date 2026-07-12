@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Uso dos Planos</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Uso dos Planos</h1><div class="sub" id="sub">—</div></div></div></div>
+
+  <button class="btn btn-primary btn-block" style="margin-bottom:12px" onclick="abrirVisita()">＋ Registrar visita de assinante</button>
+
+  <div class="filters"><div class="field" style="flex:1"><label>Mês</label><input type="month" id="f-mes" onchange="carregar()"></div></div>
+
+  <div class="statrow">
+    <div class="stat"><div class="n" id="k-assin">—</div><div class="l">Assinantes</div></div>
+    <div class="stat"><div class="n" id="k-visitas">—</div><div class="l">Visitas no mês</div></div>
+    <div class="stat"><div class="n neg" id="k-dorm">—</div><div class="l">Em risco</div></div>
+  </div>
+
+  <div class="card">
+    <div class="label" style="font-size:0.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);font-weight:600;margin-bottom:8px">Margem dos planos (mês)</div>
+    <div class="row-item" style="border:none;padding:0">
+      <div><div class="ri-sub">Arrecadação</div><div class="ri-main" id="m-arrecad" style="color:var(--green)">—</div></div>
+      <div><div class="ri-sub">Bolo comissão</div><div class="ri-main" id="m-bolo" style="color:var(--red)">—</div></div>
+      <div><div class="ri-sub">Margem</div><div class="ri-main" id="m-margem">—</div></div>
+    </div>
+  </div>
+
+  <div class="card" id="card-barb" style="display:none">
+    <div class="label" style="font-size:0.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);font-weight:600;margin-bottom:10px">Visitas por barbeiro (mês)</div>
+    <div class="mini-bars" id="barb"></div>
+  </div>
+
+  <div class="section-title">Assinantes <span class="muted" style="font-weight:400;font-size:0.8rem" id="ord"></span></div>
+  <div class="list" id="lista"><div class="empty">Carregando…</div></div>
+</div>
+
+<!-- Modal: registrar visita -->
+<div class="modal-bg" id="mv">
+  <div class="modal">
+    <h2>Registrar visita</h2>
+    <div class="field"><label>Assinante</label>
+      <input type="text" id="v-busca" placeholder="Buscar assinante..." oninput="filtrarAssin(this.value)" autocomplete="off">
+      <div id="v-res"></div>
+      <div id="v-sel" class="muted" style="margin-top:6px"></div>
+    </div>
+    <div id="v-detalhe" style="display:none">
+      <div class="field"><label>Serviços do plano (toque para incluir/tirar)</label>
+        <div class="chips" id="v-servicos"></div></div>
+      <div class="field"><label>Barbeiro que atendeu (recebe a comissão)</label>
+        <select id="v-barbeiro"></select></div>
+      <div class="field"><label>Data da visita</label><input type="date" id="v-data"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('mv')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvarVisita()">Registrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: histórico de visitas -->
+<div class="modal-bg" id="mh">
+  <div class="modal">
+    <h2 id="mh-titulo">Visitas</h2>
+    <div class="list" id="mh-lista"><div class="empty">Carregando…</div></div>
+    <div class="modal-actions"><button class="btn btn-primary btn-block" onclick="closeModal('mh')">Fechar</button></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+function mesAtual() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; }
+function rangeMes() { const v = document.getElementById('f-mes').value || mesAtual(); const [y,m]=v.split('-').map(Number); const ult=new Date(y,m,0).getDate(); return [`${v}-01`, `${v}-${String(ult).padStart(2,'0')}`]; }
+
+let ASSINANTES = [], PROFS = [], vSel = null, vServSel = new Set();
+const ST = { intenso:'intenso', regular:'regular', dormente:'dormente', nunca:'nunca' };
+const ST_LABEL = { intenso:'intenso', regular:'regular', dormente:'sumiu +30d', nunca:'nunca usou' };
+
+async function carregar() {
+  const [de, ate] = rangeMes();
+  try {
+    const j = await api(`/api/relatorios/assinantes-uso?de=${de}&ate=${ate}`);
+    const s = j.resumo;
+    document.getElementById('sub').textContent = `${s.assinantes} ativo(s) · ${s.visitas} visita(s) no mês`;
+    document.getElementById('k-assin').textContent = s.assinantes;
+    document.getElementById('k-visitas').textContent = s.visitas;
+    document.getElementById('k-dorm').textContent = s.dormentes + s.nunca;
+    document.getElementById('m-arrecad').textContent = money(s.arrecadacao);
+    document.getElementById('m-bolo').textContent = '−' + money(s.bolo);
+    const mg = document.getElementById('m-margem'); mg.textContent = money(s.margem);
+    mg.style.color = s.margem >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // por barbeiro
+    const cb = document.getElementById('card-barb');
+    if (s.por_barbeiro && s.por_barbeiro.length) {
+      cb.style.display = 'block';
+      const max = Math.max(1, ...s.por_barbeiro.map(b=>b.qtd));
+      document.getElementById('barb').innerHTML = s.por_barbeiro.map(b=>`
+        <div class="mb"><div style="min-width:92px">${escapeHtml(b.nome)}</div>
+          <div class="track"><div class="fill" style="width:${Math.round(b.qtd/max*100)}%"></div></div>
+          <div class="mb-n">${b.qtd}</div></div>`).join('');
+    } else { cb.style.display = 'none'; }
+
+    document.getElementById('ord').textContent = '· mais ativos primeiro';
+    const cont = document.getElementById('lista');
+    if (!j.rows.length) { cont.innerHTML = '<div class="empty">Nenhuma assinatura ativa.</div>'; return; }
+    cont.innerHTML = j.rows.map(r => {
+      const ult = r.ultima_visita ? `${fmtData(r.ultima_visita)}${r.dias_sem_visita!=null?` · há ${r.dias_sem_visita}d`:''}` : 'nunca veio';
+      const freq = r.frequencia_media != null ? `a cada ${r.frequencia_media}d` : '—';
+      const custo = r.custo_por_visita != null ? money(r.custo_por_visita) : '—';
+      const barb = r.barbeiros && r.barbeiros.length ? r.barbeiros.map(b=>`${escapeHtml(b.nome)} (${b.qtd})`).join(', ') : '—';
+      return `<div class="row-item" style="cursor:pointer" onclick="verVisitas(${r.cliente_id}, '${escapeHtml(r.cliente_nome).replace(/'/g,'')}')">
+        <div style="min-width:0">
+          <div class="ri-main">${escapeHtml(r.cliente_nome)} <span class="badge ${ST[r.status]}">${ST_LABEL[r.status]}</span></div>
+          <div class="ri-sub">${escapeHtml(r.plano_nome)} · ${money(r.mensalidade)}/mês · barbeiro: ${barb}</div>
+          <div class="ri-sub">última: ${ult} · freq. ${freq}</div>
+        </div>
+        <div style="text-align:right;white-space:nowrap">
+          <div class="ri-right" style="font-size:1.15rem;color:var(--accent)">${r.visitas}</div>
+          <div class="ri-sub">visitas · ${custo}/visita</div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// ── Registrar visita ──
+async function abrirVisita() {
+  if (!ASSINANTES.length) ASSINANTES = (await api('/api/assinantes/ativos')).rows;
+  if (!PROFS.length) PROFS = (await api('/api/profissionais')).rows;
+  vSel = null; vServSel = new Set();
+  document.getElementById('v-busca').value = '';
+  document.getElementById('v-sel').textContent = '';
+  document.getElementById('v-res').innerHTML = '';
+  document.getElementById('v-detalhe').style.display = 'none';
+  document.getElementById('v-barbeiro').innerHTML = PROFS.map(p=>`<option value="${p.id}">${escapeHtml(p.nome)}</option>`).join('');
+  document.getElementById('v-data').value = hoje();
+  filtrarAssin('');
+  openModal('mv');
+}
+function filtrarAssin(q) {
+  q = (q||'').toLowerCase().trim();
+  const rows = q ? ASSINANTES.filter(a => (a.cliente_nome||'').toLowerCase().includes(q)) : ASSINANTES.slice(0, 8);
+  document.getElementById('v-res').innerHTML = rows.slice(0, 8).map(a =>
+    `<div class="row-item" style="margin-top:6px;cursor:pointer" onclick="selAssin(${a.cliente_id})">
+      <div class="ri-main">${escapeHtml(a.cliente_nome)}</div><div class="ri-sub">${escapeHtml(a.plano_nome)}</div></div>`).join('')
+    || '<div class="muted" style="margin-top:6px">Nenhum assinante ativo encontrado.</div>';
+}
+function selAssin(cid) {
+  vSel = ASSINANTES.find(a => a.cliente_id === cid);
+  if (!vSel) return;
+  vServSel = new Set((vSel.servicos||[]).map(s => s.id));   // todos os cobertos por padrão
+  document.getElementById('v-sel').textContent = '✓ ' + vSel.cliente_nome + ' — ' + vSel.plano_nome;
+  document.getElementById('v-res').innerHTML = '';
+  document.getElementById('v-busca').value = '';
+  renderServicos();
+  document.getElementById('v-detalhe').style.display = 'block';
+}
+function renderServicos() {
+  const chips = (vSel.servicos||[]);
+  if (!chips.length) { document.getElementById('v-servicos').innerHTML = '<span class="muted">Plano sem serviços — a visita será registrada mesmo assim.</span>'; return; }
+  document.getElementById('v-servicos').innerHTML = chips.map(s =>
+    `<button type="button" class="chip" style="${vServSel.has(s.id)?'border-color:var(--accent);color:var(--accent)':''}" onclick="toggleServ(${s.id}, this)">${escapeHtml(s.nome)}</button>`).join('');
+}
+function toggleServ(id, el) {
+  if (vServSel.has(id)) vServSel.delete(id); else vServSel.add(id);
+  el.style.cssText = vServSel.has(id) ? 'border-color:var(--accent);color:var(--accent)' : '';
+}
+async function salvarVisita() {
+  if (!vSel) return toast('Escolha o assinante.', 'err');
+  try {
+    await api('/api/visitas/registrar', { method:'POST', body:{
+      cliente_id: vSel.cliente_id,
+      profissional_id: document.getElementById('v-barbeiro').value,
+      data: document.getElementById('v-data').value || undefined,
+      servicos_ids: [...vServSel],
+    }});
+    toast('Visita registrada!', 'ok');
+    closeModal('mv');
+    carregar();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// ── Histórico ──
+async function verVisitas(cid, nome) {
+  document.getElementById('mh-titulo').textContent = 'Visitas — ' + nome;
+  document.getElementById('mh-lista').innerHTML = '<div class="empty">Carregando…</div>';
+  openModal('mh');
+  try {
+    const { rows } = await api(`/api/assinantes/${cid}/visitas`);
+    document.getElementById('mh-lista').innerHTML = rows.length
+      ? rows.map(v => `<div class="row-item"><div>
+          <div class="ri-main">${fmtData(v.dia)}</div>
+          <div class="ri-sub">${escapeHtml(v.servicos||'—')}</div></div>
+          <div class="ri-right">${escapeHtml(v.barbeiro||'—')}</div></div>`).join('')
+      : '<div class="empty">Nenhuma visita registrada ainda.</div>';
+  } catch (e) { document.getElementById('mh-lista').innerHTML = '<div class="empty">'+e.message+'</div>'; }
+}
+
+document.getElementById('f-mes').value = mesAtual();
+renderShell('/mais');
+carregar();
+if (new URLSearchParams(location.search).get('novo') === '1') abrirVisita();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

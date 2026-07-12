@@ -46,8 +46,8 @@ async function carregar(q='') {
     if (!rows.length) { cont.innerHTML = '<div class="empty">Nenhum cliente.</div>'; return; }
     cont.innerHTML = rows.map(c => `
       <div class="row-item" onclick="editar(${c.id})">
-        <div><div class="ri-main">${escapeHtml(c.nome)} ${c.tipo==='fixo'?'<span class="badge plano">fixo</span>':''}</div>
-          <div class="ri-sub">${escapeHtml(c.telefone||'sem telefone')} ${c.prof_nome?('· '+escapeHtml(c.prof_nome)):''}</div></div>
+        <div><div class="ri-main">${escapeHtml(c.nome)} ${c.tipo==='fixo'?'<span class="badge plano">fixo</span>':''} ${c.plano_nome?'<span class="badge assinante">⭐ assinante</span>':''}</div>
+          <div class="ri-sub">${escapeHtml(c.telefone||'sem telefone')} ${c.prof_nome?('· '+escapeHtml(c.prof_nome)):''}${c.plano_nome?(' · '+escapeHtml(c.plano_nome)):''}</div></div>
         <div class="muted">›</div>
       </div>`).join('');
   } catch (e) { toast(e.message, 'err'); }

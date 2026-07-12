@@ -19,7 +19,7 @@
 <script>
 const params = new URLSearchParams(location.search);
 const COMANDA_ID = params.get('id');
-let COM = null, ITENS = [], SERVICOS = [], PRODUTOS = [], PROFS = [], FORMAS = [], executorId = null;
+let COM = null, ITENS = [], SERVICOS = [], PRODUTOS = [], PROFS = [], FORMAS = [], executorId = null, ASSINA = null;
 
 async function init() {
   await renderShell('/comanda');
@@ -37,6 +37,7 @@ async function listarAbertas() {
     document.getElementById('sub').textContent = abertas.length + ' aberta(s)';
     const cont = document.getElementById('conteudo');
     let html = '';
+    html += '<a class="btn btn-block" style="margin-bottom:12px" href="/uso?novo=1">⭐ Registrar visita de assinante</a>';
     html += '<div class="section-title" style="margin-top:0">Abertas</div>';
     html += abertas.length
       ? '<div class="list">' + abertas.map(c => `
@@ -69,7 +70,7 @@ async function cancelarAtendimento(id) {
 async function abrirComanda() {
   try {
     const j = await api('/api/comandas/aberta?id=' + COMANDA_ID);
-    COM = j.comanda; ITENS = j.itens;
+    COM = j.comanda; ITENS = j.itens; ASSINA = j.assinatura || null;
     [SERVICOS, PRODUTOS, PROFS, FORMAS] = [
       (await api('/api/servicos')).rows,
       (await api('/api/produtos')).rows,
@@ -84,10 +85,24 @@ async function abrirComanda() {
   } catch (e) { toast(e.message, 'err'); document.getElementById('conteudo').innerHTML = '<div class="empty">'+e.message+'</div>'; }
 }
 
+function bannerAssinante() {
+  if (!ASSINA) return '';
+  const wd = new Date(hoje() + 'T00:00:00').getDay();
+  const cobre = (ASSINA.dias_inclusos || []).includes(wd);
+  const cor = cobre ? 'var(--green)' : 'var(--orange)';
+  const bg = cobre ? 'rgba(52,211,153,.07)' : 'rgba(251,146,60,.07)';
+  const msg = cobre
+    ? 'Cobre hoje — serviços do plano entram R$ 0 (1 visita por dia).'
+    : 'Hoje está fora dos dias do plano — serviços serão cobrados normal.';
+  return `<div class="card" style="border-color:${cor};background:${bg}">
+      <strong>⭐ Assinante · ${escapeHtml(ASSINA.plano_nome||'')}</strong>
+      <div class="ri-sub" style="margin-top:2px">${msg}</div></div>`;
+}
+
 function render() {
   const total = ITENS.reduce((s,i)=>s+Number(i.subtotal),0);
   const cont = document.getElementById('conteudo');
-  cont.innerHTML = `
+  cont.innerHTML = bannerAssinante() + `
     <div class="card">
       <div class="field"><label>Barbeiro executando os serviços</label>
         <select id="executor" onchange="executorId=this.value">

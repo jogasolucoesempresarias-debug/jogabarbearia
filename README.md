@@ -36,7 +36,15 @@ Fuso horário **America/Sao_Paulo** (app via `TZ` e conexão do banco via `optio
   **despesas fixas recorrentes** (aluguel/imposto/internet) com "Gerar despesas do mês".
 - **Caixa**: fechamento do dia por forma de pagamento (Dinheiro/Pix/Cartão) + a receber/lançamentos.
 - **DRE/Resultado**: receitas (serviços, produtos, assinaturas) − despesas (por categoria, incl.
-  comissões pagas) = resultado do mês.
+  comissões pagas) = resultado. Período flexível (mês/trimestre/ano/intervalo), **evolução de 6
+  meses** em gráfico, **drill-down** por serviço/produto (qtd + valor), ticket médio, nº de
+  atendimentos e comparativo ▲/▼ com o período anterior.
+- **Uso dos Planos**: documenta e analisa as visitas dos assinantes. **Registrar visita** em 1 passo
+  (assinante + barbeiro executor + data, aceita retroativo) cria/fecha uma comanda R$0 — reusa a
+  máquina de comissão (o barbeiro entra no bolo) sem distorcer o caixa. Painel por assinante:
+  visitas no mês, última visita, frequência média, custo por visita, status de uso
+  (intenso/regular/dormente/nunca), distribuição por barbeiro; agregados de margem dos planos e
+  assinantes em risco de churn.
 - **Agenda**: slots de 30min, multi-serviço (soma a duração), walk-in, bloqueio/folga, cancelamento
   sem taxa, horário por dia.
 - **Cadastro de cliente**: telefone com máscara `(DD) 9XXXX-XXXX` e nome em MAIÚSCULO.
@@ -69,6 +77,7 @@ comissão**) · `joaovictor@barbearia.local` (barbeiro). `_reset.py` reseta o ba
 - `_smoke_gestao.py` — timezone, dona fora do rateio, fechar comissão→despesa, DRE
 - `_smoke_despesas.py` — despesas, categorias, fixas (gerar do mês)
 - `_smoke_assinatura.py` — 1ª no caixa hoje + próxima no dia 10/30 do mês seguinte
+- `_smoke_uso.py` — registrar visita de assinante, Uso dos Planos e DRE aprimorado (test_client)
 - `_teste_completo.py` — bateria ponta a ponta
 
 ## Deploy
@@ -86,7 +95,7 @@ server.py            # backend: auth+RBAC, agenda, comanda, assinaturas, despesa
 init_db.py           # schema (idempotente, migrações aditivas)
 seed_barbearia.py    # dados pré-configurados (serviços, produtos, 2 barbeiros, horários, 3 planos)
 static/app.css|js    # shell mobile-first (bottom-nav, máscara telefone, helpers)
-agenda · comanda · clientes · assinaturas · caixa · despesas · relatorios(Comissões) · dre · config · barbeiro .html
+agenda · comanda · clientes · assinaturas · uso(Uso dos Planos) · caixa · despesas · relatorios(Comissões) · dre · config · barbeiro .html
 login.html · trocar-senha.html
 manifest.json · sw.js  # PWA (service worker network-first)
 docker-compose.prod.yml · .github/workflows/deploy.yml · Dockerfile

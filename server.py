@@ -6,7 +6,7 @@ import os
 import math
 import calendar
 import functools
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json
@@ -122,8 +122,23 @@ def rate_limit_ok(ip, maximo=5, janela_seg=600):
     return True
 
 
-def cobertura_plano(cliente_id, servico_id, d: date):
-    """Retorna (coberto:bool, assinatura_id|None) p/ um serviço de um cliente numa data."""
+def visita_coberta_no_dia(cliente_id, d, exclude_comanda_id=None):
+    """Nº de comandas (não canceladas) do cliente com item coberto no dia d.
+    exclude_comanda_id ignora a própria comanda (p/ não bloquear 2 serviços na MESMA visita)."""
+    if not cliente_id:
+        return 0
+    return scalar("""SELECT COUNT(DISTINCT c.id) FROM comandas c
+        JOIN comanda_itens ci ON ci.comanda_id = c.id
+        WHERE c.cliente_id = %s AND ci.coberto_plano AND c.status <> 'cancelada'
+          AND COALESCE(c.fechada_em::date, c.aberta_em::date) = %s
+          AND (%s::int IS NULL OR c.id <> %s::int)""",
+        (cliente_id, d, exclude_comanda_id, exclude_comanda_id)) or 0
+
+
+def cobertura_plano(cliente_id, servico_id, d: date, exclude_comanda_id=None):
+    """Retorna (coberto:bool, assinatura_id|None) p/ um serviço de um cliente numa data.
+    Regra de 1 visita coberta por dia: se já há OUTRA comanda coberta do cliente no dia, não cobre
+    de novo (o benefício do plano já foi usado) — evita dobrar visita/comissão."""
     if not cliente_id:
         return (False, None)
     row = q_one("""
@@ -139,6 +154,8 @@ def cobertura_plano(cliente_id, servico_id, d: date):
         return (False, None)
     dias = row['dias_inclusos'] or []
     if js_weekday(d) not in dias:
+        return (False, None)
+    if visita_coberta_no_dia(cliente_id, d, exclude_comanda_id) > 0:
         return (False, None)
     if row['limite_uso'] is not None:
         usados = scalar("""
@@ -209,6 +226,7 @@ PAGINAS = {
     '/caixa':       'caixa.html',
     '/despesas':    'despesas.html',
     '/relatorios':  'relatorios.html',
+    '/uso':         'uso.html',
     '/dre':         'dre.html',
     '/config':      'config.html',
     '/barbeiro':    'barbeiro.html',
@@ -477,14 +495,19 @@ def prod_delete(pid):
 @login_required
 def cli_list():
     busca = (request.args.get('q') or '').strip()
+    # plano_nome = plano da assinatura ativa hoje (NULL = não é assinante) → selo ⭐ no front
+    assin_sub = """(SELECT pl.nome FROM assinaturas a JOIN planos pl ON pl.id=a.plano_id
+                    WHERE a.cliente_id=c.id AND a.status='ativa'
+                      AND a.data_inicio<=CURRENT_DATE AND (a.data_fim IS NULL OR a.data_fim>=CURRENT_DATE)
+                    ORDER BY a.id DESC LIMIT 1) AS plano_nome"""
     if busca:
-        rows = q_all("""SELECT c.*, p.nome AS prof_nome FROM clientes c
+        rows = q_all(f"""SELECT c.*, p.nome AS prof_nome, {assin_sub} FROM clientes c
                         LEFT JOIN profissionais p ON p.id=c.profissional_fixo_id
                         WHERE c.ativo AND c.status='aprovado' AND (c.nome ILIKE %s OR c.telefone ILIKE %s)
                         ORDER BY c.nome LIMIT 50""",
                      (f"%{busca}%", f"%{busca}%"))
     else:
-        rows = q_all("""SELECT c.*, p.nome AS prof_nome FROM clientes c
+        rows = q_all(f"""SELECT c.*, p.nome AS prof_nome, {assin_sub} FROM clientes c
                         LEFT JOIN profissionais p ON p.id=c.profissional_fixo_id
                         WHERE c.ativo AND c.status='aprovado' ORDER BY c.nome LIMIT 200""")
     return jsonify({'ok': True, 'rows': rows})
@@ -677,6 +700,24 @@ def agenda():
     for a in agendamentos:
         ids = a.get('servicos_ids') or ([a['servico_id']] if a.get('servico_id') else [])
         a['servicos_nomes'] = [smap[i] for i in ids if i in smap]
+
+    # Marca assinantes (selo na agenda) e se o plano cobre o dia exibido (aviso de cobertura)
+    cli_ids = list({a['cliente_id'] for a in agendamentos if a.get('cliente_id')})
+    assin_map = {}
+    if cli_ids:
+        for r in q_all("""SELECT DISTINCT ON (a.cliente_id) a.cliente_id, pl.nome AS plano_nome, pl.dias_inclusos
+                          FROM assinaturas a JOIN planos pl ON pl.id=a.plano_id
+                          WHERE a.cliente_id = ANY(%s) AND a.status='ativa'
+                            AND a.data_inicio<=%s AND (a.data_fim IS NULL OR a.data_fim>=%s)
+                          ORDER BY a.cliente_id, a.id DESC""", (cli_ids, d, d)):
+            assin_map[r['cliente_id']] = r
+    wd = js_weekday(d)
+    for a in agendamentos:
+        info = assin_map.get(a.get('cliente_id'))
+        a['assinante'] = bool(info)
+        a['plano_nome'] = info['plano_nome'] if info else None
+        a['plano_cobre_dia'] = bool(info and wd in (info['dias_inclusos'] or []))
+
     bloqueios = q_all("SELECT * FROM bloqueios WHERE data=%s", (d,))
 
     return jsonify({'ok': True, 'data': d.isoformat(), 'slot_min': slot_min,
@@ -765,7 +806,7 @@ def _add_servico_item(com, servico_id, executor, qtd=1):
     s = q_one("SELECT * FROM servicos WHERE id=%s", (servico_id,))
     if not s:
         return False
-    coberto, assin_id = cobertura_plano(com['cliente_id'], s['id'], date.today())
+    coberto, assin_id = cobertura_plano(com['cliente_id'], s['id'], date.today(), exclude_comanda_id=com['id'])
     preco_unit = 0 if coberto else float(s['preco'])
     execute("""INSERT INTO comanda_itens (comanda_id, tipo, ref_id, descricao, profissional_id,
                preco_unit, qtd, subtotal, preco_tabela, coberto_plano, assinatura_id)
@@ -820,7 +861,14 @@ def comanda_aberta():
     if not com:
         return jsonify({'ok': False, 'error': 'Comanda não encontrada'}), 404
     itens = q_all("SELECT * FROM comanda_itens WHERE comanda_id=%s ORDER BY id", (com['id'],))
-    return jsonify({'ok': True, 'comanda': com, 'itens': itens})
+    # assinatura ativa do cliente → cabeçalho "⭐ assinante" + status de cobertura hoje
+    assinatura = None
+    if com.get('cliente_id'):
+        assinatura = q_one("""SELECT pl.nome AS plano_nome, pl.dias_inclusos FROM assinaturas a
+            JOIN planos pl ON pl.id=a.plano_id WHERE a.cliente_id=%s AND a.status='ativa'
+              AND a.data_inicio<=CURRENT_DATE AND (a.data_fim IS NULL OR a.data_fim>=CURRENT_DATE)
+            ORDER BY a.id DESC LIMIT 1""", (com['cliente_id'],))
+    return jsonify({'ok': True, 'comanda': com, 'itens': itens, 'assinatura': assinatura})
 
 
 @app.route('/api/comandas/abertas')
@@ -1023,6 +1071,177 @@ def assin_gerar_cobrancas():
             px = _add_um_mes(px)
         execute("UPDATE assinaturas SET proxima_cobranca=%s WHERE id=%s", (px, a['id']))
     return jsonify({'ok': True, 'gerados': gerados})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Visitas de assinante (documentação de uso do plano)
+# ══════════════════════════════════════════════════════════════════════
+@app.route('/api/assinantes/ativos')
+@login_required
+def assinantes_ativos():
+    """Assinantes ativos + serviços cobertos do plano — alimenta a tela de registrar visita."""
+    rows = q_all("""SELECT a.id AS assinatura_id, a.cliente_id, c.nome AS cliente_nome, c.telefone,
+                      a.plano_id, pl.nome AS plano_nome, pl.valor_mensal, pl.dias_inclusos
+                    FROM assinaturas a JOIN clientes c ON c.id=a.cliente_id
+                    JOIN planos pl ON pl.id=a.plano_id
+                    WHERE a.status='ativa' ORDER BY c.nome""")
+    for r in rows:
+        r['servicos'] = q_all("""SELECT s.id, s.nome FROM plano_servicos ps JOIN servicos s ON s.id=ps.servico_id
+                                 WHERE ps.plano_id=%s ORDER BY s.nome""", (r['plano_id'],))
+    return jsonify({'ok': True, 'rows': rows})
+
+
+@app.route('/api/visitas/registrar', methods=['POST'])
+@login_required
+def visita_registrar():
+    """Registra uma visita de assinante em 1 passo: cria e fecha uma comanda R$0 com os serviços
+    cobertos, atribuindo o barbeiro executor (que entra no bolo de comissão). Aceita data passada."""
+    d = request.get_json() or {}
+    cliente_id = d.get('cliente_id')
+    prof = d.get('profissional_id')
+    dia = parse_date(d.get('data'), date.today())
+    if not (cliente_id and prof):
+        return jsonify({'ok': False, 'error': 'Cliente e barbeiro são obrigatórios'}), 400
+    if dia > date.today():
+        return jsonify({'ok': False, 'error': 'A data não pode ser futura'}), 400
+    assin = q_one("""SELECT a.id, a.plano_id, pl.limite_uso FROM assinaturas a JOIN planos pl ON pl.id=a.plano_id
+                     WHERE a.cliente_id=%s AND a.status='ativa'
+                       AND a.data_inicio<=%s AND (a.data_fim IS NULL OR a.data_fim>=%s)
+                     ORDER BY a.id DESC LIMIT 1""", (cliente_id, dia, dia))
+    if not assin:
+        return jsonify({'ok': False, 'error': 'Cliente não tem assinatura ativa nessa data'}), 400
+    # Trava firme: 1 visita coberta por dia — evita dobrar visita/comissão (comanda + registrar)
+    if visita_coberta_no_dia(cliente_id, dia) > 0:
+        return jsonify({'ok': False, 'error': 'Este assinante já tem uma visita registrada nesse dia'}), 409
+    serv_ids = [int(x) for x in (d.get('servicos_ids') or []) if x]
+    if not serv_ids:
+        serv_ids = [r['servico_id'] for r in q_all("SELECT servico_id FROM plano_servicos WHERE plano_id=%s", (assin['plano_id'],))]
+    if not serv_ids:
+        return jsonify({'ok': False, 'error': 'O plano não tem serviços configurados'}), 400
+    if assin['limite_uso'] is not None:
+        usados = scalar("""SELECT COUNT(DISTINCT c.id) FROM comandas c JOIN comanda_itens ci ON ci.comanda_id=c.id
+            WHERE ci.assinatura_id=%s AND ci.coberto_plano AND c.status<>'cancelada'
+              AND date_trunc('month', c.fechada_em)=date_trunc('month', %s::timestamp)""", (assin['id'], dia)) or 0
+        if usados >= assin['limite_uso']:
+            return jsonify({'ok': False, 'error': f"Limite do plano no mês já atingido ({assin['limite_uso']} visitas)"}), 409
+    fechada = f"{dia.isoformat()} 12:00:00"   # meio-dia p/ o dia bater com o filtro por data (fechada_em::date)
+    row = execute("""INSERT INTO comandas (cliente_id, profissional_id, status, valor_total, fechada_em, criado_por)
+                     VALUES (%s,%s,'fechada',0,%s,%s) RETURNING id""",
+                  (cliente_id, prof, fechada, session['user_id']), returning=True)
+    cid = row['id']
+    for sid in serv_ids:
+        s = q_one("SELECT id, nome, preco FROM servicos WHERE id=%s", (sid,))
+        if not s:
+            continue
+        execute("""INSERT INTO comanda_itens (comanda_id, tipo, ref_id, descricao, profissional_id,
+                   preco_unit, qtd, subtotal, preco_tabela, coberto_plano, assinatura_id)
+                   VALUES (%s,'servico',%s,%s,%s,0,1,0,%s,true,%s)""",
+                (cid, s['id'], s['nome'], prof, float(s['preco']), assin['id']))
+    return jsonify({'ok': True, 'comanda_id': cid})
+
+
+@app.route('/api/assinantes/<int:cliente_id>/visitas')
+@login_required
+def assinante_visitas(cliente_id):
+    """Histórico de visitas cobertas de um assinante (para o detalhe/modal)."""
+    rows = q_all("""SELECT c.id, c.fechada_em::date AS dia, pr.nome AS barbeiro,
+                      (SELECT string_agg(ci.descricao, ', ' ORDER BY ci.descricao) FROM comanda_itens ci
+                         WHERE ci.comanda_id=c.id AND ci.coberto_plano) AS servicos
+                    FROM comandas c LEFT JOIN profissionais pr ON pr.id=c.profissional_id
+                    WHERE c.status='fechada' AND c.cliente_id=%s
+                      AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano)
+                    ORDER BY c.fechada_em DESC LIMIT 60""", (cliente_id,))
+    return jsonify({'ok': True, 'rows': rows})
+
+
+@app.route('/api/relatorios/assinantes-uso')
+@login_required
+def rel_assinantes_uso():
+    """Uso dos planos: por assinante ativo — visitas no período, última visita, frequência média,
+    custo por visita, status de uso e distribuição por barbeiro. Mais agregados p/ decisão."""
+    de = parse_date(request.args.get('de'), date.today().replace(day=1))
+    ate = parse_date(request.args.get('ate'), date.today())
+    hoje = date.today()
+
+    ativos = q_all("""SELECT a.cliente_id, c.nome AS cliente_nome, pl.nome AS plano_nome,
+                        pl.valor_mensal, a.dia_vencimento
+                      FROM assinaturas a JOIN clientes c ON c.id=a.cliente_id
+                      JOIN planos pl ON pl.id=a.plano_id WHERE a.status='ativa' ORDER BY c.nome""")
+
+    visitas_periodo = q_all("""SELECT c.id, c.cliente_id, pr.nome AS prof_nome
+        FROM comandas c LEFT JOIN profissionais pr ON pr.id=c.profissional_id
+        WHERE c.status='fechada' AND c.fechada_em::date BETWEEN %s AND %s
+          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano)""", (de, ate))
+    alltime = q_all("""SELECT c.cliente_id, MAX(c.fechada_em::date) AS ultima, COUNT(DISTINCT c.id) AS total
+        FROM comandas c WHERE c.status='fechada'
+          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano)
+        GROUP BY c.cliente_id""")
+    ult90 = q_all("""SELECT c.cliente_id, c.fechada_em::date AS dia FROM comandas c
+        WHERE c.status='fechada' AND c.fechada_em::date >= %s
+          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano)""",
+        (hoje - timedelta(days=90),))
+
+    at_idx = {r['cliente_id']: r for r in alltime}
+    per_idx = {}
+    for v in visitas_periodo:
+        e = per_idx.setdefault(v['cliente_id'], {'ids': set(), 'barb': {}})
+        e['ids'].add(v['id'])
+        nome = v['prof_nome'] or '—'
+        e['barb'][nome] = e['barb'].get(nome, 0) + 1
+    freq_idx = {}
+    for r in ult90:
+        freq_idx.setdefault(r['cliente_id'], set()).add(parse_date(r['dia']))
+
+    def freq_media(cid):
+        ds = sorted(d for d in freq_idx.get(cid, set()) if d)
+        if len(ds) < 2:
+            return None
+        gaps = [(ds[i] - ds[i - 1]).days for i in range(1, len(ds))]
+        return round(sum(gaps) / len(gaps), 1)
+
+    rows = []
+    for a in ativos:
+        cid = a['cliente_id']
+        per = per_idx.get(cid, {'ids': set(), 'barb': {}})
+        vis = len(per['ids'])
+        at = at_idx.get(cid)
+        ultima = at['ultima'] if at else None
+        total = at['total'] if at else 0
+        dias_sem = (hoje - parse_date(ultima)).days if ultima else None
+        mensal = float(a['valor_mensal'] or 0)
+        custo_visita = round(mensal / vis, 2) if vis else None
+        if total == 0:
+            status = 'nunca'
+        elif dias_sem is not None and dias_sem > 30:
+            status = 'dormente'
+        elif vis >= 4:
+            status = 'intenso'
+        else:
+            status = 'regular'
+        barb = sorted(({'nome': k, 'qtd': v} for k, v in per['barb'].items()), key=lambda x: -x['qtd'])
+        rows.append({'cliente_id': cid, 'cliente_nome': a['cliente_nome'], 'plano_nome': a['plano_nome'],
+                     'mensalidade': mensal, 'visitas': vis, 'ultima_visita': ultima, 'dias_sem_visita': dias_sem,
+                     'total_visitas': total, 'frequencia_media': freq_media(cid), 'custo_por_visita': custo_visita,
+                     'status': status, 'barbeiros': barb, 'dia_vencimento': a['dia_vencimento']})
+    rows.sort(key=lambda x: (-x['visitas'], x['cliente_nome'] or ''))
+
+    arrecad = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
+        WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
+    pool_pct = float(cfg().get('comissao_padrao') or 45)
+    bolo = arrecad * pool_pct / 100.0
+    barb_agg = {}
+    for v in visitas_periodo:
+        nome = v['prof_nome'] or '—'
+        barb_agg[nome] = barb_agg.get(nome, 0) + 1
+    por_barbeiro = sorted(({'nome': k, 'qtd': v} for k, v in barb_agg.items()), key=lambda x: -x['qtd'])
+
+    return jsonify({'ok': True, 'de': de.isoformat(), 'ate': ate.isoformat(), 'rows': rows,
+                    'resumo': {'assinantes': len(rows), 'visitas': sum(r['visitas'] for r in rows),
+                               'dormentes': sum(1 for r in rows if r['status'] == 'dormente'),
+                               'nunca': sum(1 for r in rows if r['status'] == 'nunca'),
+                               'arrecadacao': round(arrecad, 2), 'bolo': round(bolo, 2),
+                               'margem': round(arrecad - bolo, 2), 'pool_pct': pool_pct,
+                               'por_barbeiro': por_barbeiro}})
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1310,13 +1529,8 @@ def comissao_fechar():
     return jsonify({'ok': True})
 
 
-@app.route('/api/relatorios/dre')
-@login_required
-def rel_dre():
-    """Resultado (DRE) do período — base caixa (status=pago / comandas fechadas)."""
-    de = parse_date(request.args.get('de'), date.today().replace(day=1))
-    ate = parse_date(request.args.get('ate'), date.today())
-
+def _dre_totais(de, ate):
+    """Receita/despesa/resultado de um período (base caixa). Reuso no comparativo."""
     rec_serv = scalar("""SELECT COALESCE(SUM(ci.subtotal),0) FROM comanda_itens ci
         JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
         WHERE ci.tipo='servico' AND c.fechada_em::date BETWEEN %s AND %s""", (de, ate)) or 0
@@ -1327,19 +1541,107 @@ def rel_dre():
         WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
     rec_outras = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
         WHERE origem='manual' AND tipo='receita' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
+    total_desp = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
+        WHERE tipo='despesa' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
     total_rec = rec_serv + rec_prod + rec_assin + rec_outras
+    return {'servicos': rec_serv, 'produtos': rec_prod, 'assinaturas': rec_assin, 'outras': rec_outras,
+            'receita_total': total_rec, 'despesa_total': total_desp, 'resultado': total_rec - total_desp}
+
+
+@app.route('/api/relatorios/dre')
+@login_required
+def rel_dre():
+    """Resultado (DRE) do período — base caixa (status=pago / comandas fechadas).
+    Inclui o detalhamento por serviço/produto, atendimentos, ticket médio e comparativo
+    com o período anterior de mesmo tamanho."""
+    de = parse_date(request.args.get('de'), date.today().replace(day=1))
+    ate = parse_date(request.args.get('ate'), date.today())
+    t = _dre_totais(de, ate)
+
+    # Detalhamento (só itens PAGOS: coberto_plano=false → composição real do faturamento)
+    serv_det = q_all("""SELECT ci.descricao AS nome, SUM(ci.qtd) AS qtd, COALESCE(SUM(ci.subtotal),0) AS total
+        FROM comanda_itens ci JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        WHERE ci.tipo='servico' AND ci.coberto_plano=false AND c.fechada_em::date BETWEEN %s AND %s
+        GROUP BY ci.descricao ORDER BY total DESC""", (de, ate))
+    prod_det = q_all("""SELECT ci.descricao AS nome, SUM(ci.qtd) AS qtd, COALESCE(SUM(ci.subtotal),0) AS total
+        FROM comanda_itens ci JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        WHERE ci.tipo='produto' AND c.fechada_em::date BETWEEN %s AND %s
+        GROUP BY ci.descricao ORDER BY total DESC""", (de, ate))
 
     despesas = q_all("""SELECT COALESCE(categoria,'Sem categoria') AS categoria, COALESCE(SUM(valor),0) AS total
         FROM movimentos WHERE tipo='despesa' AND status='pago' AND data BETWEEN %s AND %s
         GROUP BY categoria ORDER BY total DESC""", (de, ate))
-    total_desp = sum(float(x['total']) for x in despesas)
+
+    # Atendimentos pagos (comandas fechadas com valor > 0) → ticket médio de serviços+produtos
+    atend = scalar("""SELECT COUNT(*) FROM comandas WHERE status='fechada' AND valor_total>0
+        AND fechada_em::date BETWEEN %s AND %s""", (de, ate)) or 0
+    visitas_plano = scalar("""SELECT COUNT(DISTINCT c.id) FROM comandas c
+        WHERE c.status='fechada' AND c.fechada_em::date BETWEEN %s AND %s
+          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano)""", (de, ate)) or 0
+    ticket = round((t['servicos'] + t['produtos']) / atend, 2) if atend else 0
+
+    # Comparativo: período anterior imediatamente antes, de mesmo tamanho
+    dias = (ate - de).days
+    prev_ate = de - timedelta(days=1)
+    prev_de = prev_ate - timedelta(days=dias)
+    p = _dre_totais(prev_de, prev_ate)
 
     return jsonify({'ok': True, 'de': de.isoformat(), 'ate': ate.isoformat(),
-                    'receitas': {'servicos': round(rec_serv, 2), 'produtos': round(rec_prod, 2),
-                                 'assinaturas': round(rec_assin, 2), 'outras': round(rec_outras, 2),
-                                 'total': round(total_rec, 2)},
-                    'despesas': despesas, 'despesas_total': round(total_desp, 2),
-                    'resultado': round(total_rec - total_desp, 2)})
+                    'receitas': {'servicos': round(t['servicos'], 2), 'produtos': round(t['produtos'], 2),
+                                 'assinaturas': round(t['assinaturas'], 2), 'outras': round(t['outras'], 2),
+                                 'total': round(t['receita_total'], 2),
+                                 'servicos_detalhe': serv_det, 'produtos_detalhe': prod_det},
+                    'despesas': despesas, 'despesas_total': round(t['despesa_total'], 2),
+                    'resultado': round(t['resultado'], 2),
+                    'atendimentos': atend, 'visitas_plano': visitas_plano, 'ticket_medio': ticket,
+                    'comparativo': {'de': prev_de.isoformat(), 'ate': prev_ate.isoformat(),
+                                    'receita': round(p['receita_total'], 2), 'despesa': round(p['despesa_total'], 2),
+                                    'resultado': round(p['resultado'], 2)}})
+
+
+_MES_ABR = ['', 'jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+
+
+@app.route('/api/relatorios/dre-serie')
+@login_required
+def rel_dre_serie():
+    """Série mensal de receita/despesa/resultado dos últimos N meses (evolução no DRE)."""
+    try:
+        meses = min(max(int(request.args.get('meses') or 6), 1), 24)
+    except (ValueError, TypeError):
+        meses = 6
+    ref = parse_date(request.args.get('ate'), date.today())
+    lista = []
+    y, m = ref.year, ref.month
+    for _ in range(meses):
+        lista.append((y, m))
+        m -= 1
+        if m == 0:
+            m = 12; y -= 1
+    lista.reverse()
+    start = date(lista[0][0], lista[0][1], 1)
+    end = date(ref.year, ref.month, calendar.monthrange(ref.year, ref.month)[1])
+
+    rec_comanda = {r['ym']: float(r['total']) for r in q_all("""
+        SELECT to_char(date_trunc('month', c.fechada_em),'YYYY-MM') AS ym, COALESCE(SUM(ci.subtotal),0) AS total
+        FROM comanda_itens ci JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        WHERE c.fechada_em::date BETWEEN %s AND %s GROUP BY 1""", (start, end))}
+    rec_mov = {r['ym']: float(r['total']) for r in q_all("""
+        SELECT to_char(date_trunc('month', data),'YYYY-MM') AS ym, COALESCE(SUM(valor),0) AS total
+        FROM movimentos WHERE tipo='receita' AND status='pago' AND origem IN ('assinatura','manual')
+          AND data BETWEEN %s AND %s GROUP BY 1""", (start, end))}
+    desp = {r['ym']: float(r['total']) for r in q_all("""
+        SELECT to_char(date_trunc('month', data),'YYYY-MM') AS ym, COALESCE(SUM(valor),0) AS total
+        FROM movimentos WHERE tipo='despesa' AND status='pago' AND data BETWEEN %s AND %s GROUP BY 1""", (start, end))}
+
+    serie = []
+    for (yy, mm) in lista:
+        ym = f"{yy}-{mm:02d}"
+        r = rec_comanda.get(ym, 0) + rec_mov.get(ym, 0)
+        dd = desp.get(ym, 0)
+        serie.append({'competencia': ym, 'label': f"{_MES_ABR[mm]}/{str(yy)[2:]}",
+                      'receita': round(r, 2), 'despesa': round(dd, 2), 'resultado': round(r - dd, 2)})
+    return jsonify({'ok': True, 'serie': serie})
 
 
 if __name__ == '__main__':

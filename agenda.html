@@ -40,6 +40,7 @@
       </div>
       <div id="ag-cli-res"></div>
       <div id="ag-cli-sel" class="muted" style="margin-top:6px"></div>
+      <div id="ag-plano" class="hint" style="margin-top:6px"></div>
     </div>
     <div class="field"><label>Serviços (pode escolher vários)</label>
       <div class="chips" id="ag-serv-chips"></div>
@@ -104,6 +105,7 @@
 let DADOS = null, SERVICOS = [], PROFS = [], ctxAgendar = {}, ctxAcao = {}, ctxNovoCli = null;
 let selCli = { ag: null, wk: null };
 let READONLY = false;  // barbeiro: só visualiza a própria agenda
+let ASSIN = {};        // cliente_id -> {plano_nome, dias_inclusos, servicos} (assinantes ativos)
 
 function setData(iso) { document.getElementById('f-data').value = iso; }
 function mudarDia(n) { const d = new Date(document.getElementById('f-data').value + 'T00:00:00'); d.setDate(d.getDate()+n); setData(d.toISOString().slice(0,10)); carregar(); }
@@ -159,7 +161,7 @@ function render() {
         const ag = o.ag;
         const servTxt = (ag.servicos_nomes && ag.servicos_nomes.length) ? ag.servicos_nomes.join(', ') : (ag.servico_nome || '');
         html += `<div class="slot ocupado" onclick="abrirAcao(${ag.id})">
-          <strong>${escapeHtml(ag.cliente_nome || 'Cliente')}</strong>
+          <strong>${ag.assinante ? '⭐ ' : ''}${escapeHtml(ag.cliente_nome || 'Cliente')}</strong>
           <span class="muted">${escapeHtml(servTxt)}</span></div>`;
       } else if (o) {
         html += `<div class="slot ocupado" onclick="abrirAcao(${o.ag.id})"><span class="muted">↳ ${escapeHtml(o.ag.cliente_nome || '')}</span></div>`;
@@ -186,15 +188,36 @@ function buscarCli(v, ctx) {
       const { rows } = await api('/api/clientes?q=' + encodeURIComponent(v));
       document.getElementById(ctx+'-cli-res').innerHTML = rows.slice(0,6).map(c =>
         `<div class="row-item" style="margin-top:6px;cursor:pointer" onclick="selecionarCli(${ctx==='ag'?1:0},${c.id},'${escapeHtml(c.nome)}','${ctx}')">
-          <div><div class="ri-main">${escapeHtml(c.nome)}</div><div class="ri-sub">${escapeHtml(c.telefone||'')} ${c.tipo==='fixo'?'· fixo':''}</div></div></div>`).join('');
+          <div><div class="ri-main">${escapeHtml(c.nome)} ${c.plano_nome?'<span class="badge assinante">⭐</span>':''}</div><div class="ri-sub">${escapeHtml(c.telefone||'')} ${c.tipo==='fixo'?'· fixo':''}${c.plano_nome?(' · '+escapeHtml(c.plano_nome)):''}</div></div></div>`).join('');
     } catch {}
   }, 250);
 }
 function selecionarCli(_x, id, nome, ctx) {
   selCli[ctx] = { id, nome };
-  document.getElementById(ctx+'-cli-sel').innerHTML = '✓ ' + nome;
+  const assin = ASSIN[id];
+  document.getElementById(ctx+'-cli-sel').innerHTML = '✓ ' + nome + (assin ? ' <span class="badge assinante">⭐ assinante</span>' : '');
   document.getElementById(ctx+'-cli-res').innerHTML = '';
   document.getElementById(ctx+'-cli-busca').value = '';
+  if (ctx === 'ag') { if (assin) aplicarPlanoNoAgendar(assin); else document.getElementById('ag-plano').innerHTML = ''; }
+}
+
+// Assinante selecionado: pré-seleciona os serviços do plano e avisa se o dia agendado é coberto
+function aplicarPlanoNoAgendar(assin) {
+  (assin.servicos || []).forEach(s => {
+    const chip = document.getElementById('agsrv-' + s.id);
+    if (chip && !(window._agServ || []).includes(s.id)) {
+      window._agServ.push(s.id);
+      chip.style = 'border-color:var(--accent);color:var(--accent)';
+    }
+  });
+  atualizarAgDur();
+  const wd = new Date(document.getElementById('f-data').value + 'T00:00:00').getDay();
+  const cobre = (assin.dias_inclusos || []).includes(wd);
+  const el = document.getElementById('ag-plano');
+  el.innerHTML = cobre
+    ? `⭐ <strong>${escapeHtml(assin.plano_nome)}</strong> — serviços do plano já marcados (saem R$ 0 no dia coberto).`
+    : `⭐ <strong>${escapeHtml(assin.plano_nome)}</strong> — ⚠️ ${DIAS_SEMANA[wd]} está fora do plano: será cobrado normal.`;
+  el.style.color = cobre ? 'var(--green)' : 'var(--orange)';
 }
 
 // ── Cadastro rápido na própria agenda ──
@@ -222,6 +245,7 @@ function abrirAgendar(profId, slot) {
   selCli.ag = null; window._agServ = [];
   document.getElementById('ag-ctx').textContent = `${p.nome} · ${slot} · ${fmtData(document.getElementById('f-data').value)}`;
   document.getElementById('ag-cli-sel').innerHTML = '';
+  document.getElementById('ag-plano').innerHTML = '';
   document.getElementById('ag-cli-busca').value = '';
   document.getElementById('ag-cli-res').innerHTML = '';
   document.getElementById('ag-serv-chips').innerHTML = SERVICOS.map(s =>
@@ -258,9 +282,15 @@ function abrirAcao(agId) {
   const ag = DADOS.agendamentos.find(a => a.id === agId);
   ctxAcao = ag;
   const servTxt = (ag.servicos_nomes && ag.servicos_nomes.length) ? ag.servicos_nomes.join(', ') : (ag.servico_nome || '—');
+  let planoLinha = '';
+  if (ag.assinante) {
+    planoLinha = ag.plano_cobre_dia
+      ? `<br><span class="badge assinante">⭐ ${escapeHtml(ag.plano_nome||'assinante')}</span> <span style="color:var(--green)">coberto neste dia (R$ 0)</span>`
+      : `<br><span class="badge assinante">⭐ ${escapeHtml(ag.plano_nome||'assinante')}</span> <span style="color:var(--orange)">fora do plano neste dia — será cobrado</span>`;
+  }
   document.getElementById('ac-info').innerHTML =
     `<strong>${escapeHtml(ag.cliente_nome||'Cliente')}</strong><br>
-     <span class="muted">${escapeHtml(servTxt)} · ${hhmm(ag.hora_inicio)}</span>`;
+     <span class="muted">${escapeHtml(servTxt)} · ${hhmm(ag.hora_inicio)}</span>${planoLinha}`;
   document.getElementById('ac-acoes').style.display = READONLY ? 'none' : 'block';  // barbeiro só vê
   openModal('mAcao');
 }
@@ -298,6 +328,9 @@ setData(hoje());
   if (READONLY) {
     const wk = document.getElementById('btn-walkin'); if (wk) wk.style.display = 'none';
     document.querySelector('.topbar h1').textContent = 'Minha agenda';
+  } else {
+    // mapa de assinantes ativos p/ pré-seleção e avisos de cobertura no agendamento
+    try { (await api('/api/assinantes/ativos')).rows.forEach(a => { ASSIN[a.cliente_id] = a; }); } catch (e) {}
   }
   carregar();
 })();
