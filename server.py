@@ -337,7 +337,10 @@ def cadastro_page():
 def cadastro_contexto():
     """Marca da barbearia p/ a página pública ficar com a identidade da instância. Read-only."""
     c = cfg()
-    return jsonify({'ok': True, 'marca_nome': c.get('marca_nome') or 'Barbearia'})
+    # modo_demo alimenta a caixa de credenciais na tela de login — a demo é pública e o prospect
+    # não pode ter que pedir senha pra ninguém.
+    return jsonify({'ok': True, 'marca_nome': c.get('marca_nome') or 'Barbearia',
+                    'modo_demo': MODO_DEMO})
 
 
 @app.route('/api/cadastro/publico', methods=['POST'])
@@ -400,6 +403,12 @@ PRESET_FICHA = {
 # Assim não se abre instância pra quem ainda não fechou. Fechou → cria a instância real e cola a
 # ficha lá. Num hub o "aplicar" é bloqueado: ele nunca vira barbearia.
 MODO_COLETA = os.getenv('MODO_COLETA', '').strip() in ('1', 'true', 'sim')
+
+# MODO_DEMO=1 → instância de demonstração (demobarbearia.jogasolucoes.com.br): é uma barbearia
+# normal, com dados fictícios, que o prospect navega sozinho. A senha aparece na tela de login e o
+# banco é reconstruído toda madrugada pelo seed_demo.py. Por isso o /setup fica fechado lá: entregar
+# instância não faz parte da demonstração.
+MODO_DEMO = os.getenv('MODO_DEMO', '').strip() in ('1', 'true', 'sim')
 
 
 def ficha(ficha_id=1):
@@ -470,7 +479,7 @@ def _texto_alerta_ficha(dados, ficha_row):
 @app.route('/setup', methods=['GET'])
 @login_required
 def setup_page():
-    if session.get('role') != 'dono':
+    if MODO_DEMO or session.get('role') != 'dono':
         return redirect('/')
     return send_from_directory(BASE_DIR, 'setup.html')
 
@@ -785,7 +794,7 @@ def me():
     c = cfg()
     return jsonify({'ok': True, 'nome': session.get('nome'), 'role': session.get('role'),
                     'profissional_id': session.get('profissional_id'),
-                    'modo_coleta': MODO_COLETA,
+                    'modo_coleta': MODO_COLETA, 'modo_demo': MODO_DEMO,
                     'marca': {'nome': c.get('marca_nome')}})
 
 

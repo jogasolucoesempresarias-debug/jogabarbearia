@@ -1,0 +1,51 @@
+# Instância de DEMONSTRAÇÃO — demobarbearia.jogasolucoes.com.br
+#
+# Mesma imagem de sempre. O que muda é só env var:
+#   MODO_DEMO=1  → tela de login mostra as credenciais, /setup fica fechado (entregar instância
+#                  não faz parte da demonstração) e o banco é reconstruído toda madrugada.
+#
+# É uma barbearia NORMAL, com dados fictícios, que o prospect navega sozinho. Separada do hub de
+# coleta de propósito: demo compartilhada se suja (um prospect fecha comanda, outro apaga serviço)
+# e precisa de reset — que aqui pode ser bruto, porque não há nada precioso no banco.
+#
+# ATENÇÃO: routers/services do Traefik precisam de nome ÚNICO por stack (aqui `demo`).
+
+version: '3.8'
+
+services:
+  demo-app:
+    image: ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:latest
+    networks:
+      - proxy
+      - demo-internal
+    environment:
+      TZ: America/Sao_Paulo
+      SECRET_KEY: ${SECRET_KEY}          # PRÓPRIA — nunca repetir a de outra instância
+      DB_HOST: postgres_postgres
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-joga_demo}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      MODO_DEMO: "1"
+      # SUPORTE_EMAIL/SENHA de propósito AUSENTES: esta é a instância mais exposta que existe
+      # (credencial publicada na tela). O acesso master não tem por que viver aqui — o login de
+      # dono da demo já está no banco.
+      # ALERTAS_ATIVO também fica de fora: demo não dispara WhatsApp.
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=proxy"
+        - "traefik.http.routers.demo.rule=Host(`demobarbearia.jogasolucoes.com.br`)"
+        - "traefik.http.routers.demo.entrypoints=websecure"
+        - "traefik.http.routers.demo.tls.certresolver=le"
+        - "traefik.http.services.demo.loadbalancer.server.port=5000"
+
+networks:
+  proxy:
+    external: true
+  demo-internal:
+    driver: overlay

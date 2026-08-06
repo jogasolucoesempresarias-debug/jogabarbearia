@@ -25,6 +25,15 @@
   .erro { background:rgba(248,113,113,0.1); border:1px solid rgba(248,113,113,0.3); color:var(--red); padding:10px 12px; border-radius:10px; font-size:0.82rem; margin-bottom:14px; display:none; }
   .erro.show { display:block; }
   .footer { text-align:center; margin-top:20px; color:var(--text-dim); font-size:0.7rem; font-family:'JetBrains Mono',monospace; }
+  /* Caixa de demonstração — só aparece na instância com MODO_DEMO */
+  .demo { display:none; background:rgba(56,189,248,0.07); border:1px solid rgba(56,189,248,0.28); border-radius:12px; padding:14px; margin-bottom:18px; }
+  .demo.show { display:block; }
+  .demo h2 { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--accent); margin-bottom:4px; }
+  .demo p { font-size:0.78rem; color:var(--text-dim); line-height:1.5; margin-bottom:11px; }
+  .demo button { width:100%; padding:11px; margin-top:7px; background:var(--surface2); border:1px solid var(--border); border-radius:9px; color:var(--text); font-family:inherit; font-size:0.85rem; cursor:pointer; text-align:left; }
+  .demo button:hover { border-color:var(--accent); }
+  .demo button b { display:block; font-size:0.9rem; margin-bottom:2px; }
+  .demo button span { color:var(--text-dim); font-size:0.72rem; }
 </style>
 </head>
 <body>
@@ -33,6 +42,14 @@
     <h1>JOGA Barbearia</h1>
     <p class="subtitle">Agenda · Caixa · Comissão</p>
     <div id="erro" class="erro"></div>
+    <div class="demo" id="demo">
+      <h2>Ambiente de demonstração</h2>
+      <p>Dados fictícios, reiniciados toda madrugada. Pode clicar em tudo à vontade.</p>
+      <button type="button" onclick="entrarDemo('ze@barbearia.local')">
+        <b>Entrar como dono</b><span>vê agenda, caixa, comissões e resultado</span></button>
+      <button type="button" onclick="entrarDemo('rafael@barbearia.local')">
+        <b>Entrar como barbeiro</b><span>vê só a própria agenda e a própria comissão</span></button>
+    </div>
     <form id="f" autocomplete="on">
       <div class="field"><label>E-mail</label><input type="email" id="email" required autofocus autocomplete="username"></div>
       <div class="field"><label>Senha</label><input type="password" id="senha" required autocomplete="current-password"></div>
@@ -42,6 +59,19 @@
   </div>
 <script>
   const f = document.getElementById('f'), erro = document.getElementById('erro'), b = document.getElementById('b');
+  const SENHA_DEMO = 'demo';
+
+  // A caixa de demo só aparece se a instância se declarar de demonstração.
+  fetch('/api/cadastro/contexto').then(r => r.json()).then(j => {
+    if (j && j.ok && j.modo_demo) document.getElementById('demo').classList.add('show');
+  }).catch(() => {});
+
+  function entrarDemo(email) {
+    document.getElementById('email').value = email;
+    document.getElementById('senha').value = SENHA_DEMO;
+    f.requestSubmit();
+  }
+
   f.addEventListener('submit', async e => {
     e.preventDefault(); erro.classList.remove('show'); b.disabled = true; b.textContent = 'Entrando...';
     try {

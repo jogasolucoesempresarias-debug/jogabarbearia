@@ -76,6 +76,15 @@ Fuso horário **America/Sao_Paulo** (app via `TZ` e conexão do banco via `optio
   status); o `/setup` vira uma lista com "criar ficha", link, "copiar a ficha" e apagar. O **aplicar
   é bloqueado** nele. Fechou a venda → cria a instância do cliente, cola a ficha no `/setup` de lá e
   aplica. Stack em `docker-compose.coleta.yml`.
+- **Instância de demonstração** (`MODO_DEMO=1`, em `demobarbearia.jogasolucoes.com.br`): barbearia
+  fictícia ("Barbearia do Zé") que o prospect navega sozinho antes de preencher a ficha. A tela de
+  login mostra dois acessos — **dono** (vê tudo) e **barbeiro** (vê só a própria agenda e comissão,
+  o que demonstra o RBAC melhor do que explicar). `/setup` fica fechado lá. Populada por
+  `seed_demo.py`, que **também é o reset**: apaga tudo e refaz, com **todas as datas relativas a
+  hoje** (data fixa faria a demo parecer abandonada em dois meses). Cron sugerido:
+  `0 4 * * * docker exec $(docker ps -q -f name=demobarbearia) python -X utf8 seed_demo.py`.
+  Stack em `docker-compose.demo.yml`. **O seed se recusa a rodar sem `MODO_DEMO`** — ele apaga
+  dados, e essa trava é o que impede o desastre de executá-lo na instância de um cliente.
 - **Alerta de WhatsApp**: quando o prospect clica em *Enviar*, a JOGA recebe um aviso via **UazAPI**
   (`POST /send/text`, mesmo contrato do DanfeZap/diagnóstico) com o nome da barbearia, o tamanho da
   ficha e o link pra ver. Vai em **thread de fundo** — o cliente não espera rede, e falha de WhatsApp
@@ -126,6 +135,9 @@ comissão**) · `joaovictor@barbearia.local` (barbeiro). `_reset.py` reseta o ba
   aplicar bloqueado (banco descartável próprio)
 - `_smoke_alerta.py` — alerta de WhatsApp: sobe uma **UazAPI de mentira** local e confere número
   normalizado, header do token, texto e os 2 destinatários — sem gastar mensagem nem usar internet
+- `_smoke_demo.py` — a trava do `seed_demo.py`, o reset sem duplicar, **a ficha de coleta
+  sobrevivendo ao reset** e as telas que o prospect vê (~50s: roda o seed completo de propósito,
+  porque "dormente" e o gráfico de 6 meses só existem na janela real de 180 dias)
 
 > Os smokes que sobem servidor escolhem **porta livre pelo SO**. Porta fixa fazia o teste conversar
 > com um servidor de dev já rodando e validar a instância errada em silêncio.

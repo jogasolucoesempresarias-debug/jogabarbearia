@@ -31,10 +31,15 @@ def db():
 
 c = db(); cur = c.cursor()
 cur.execute("UPDATE usuarios SET must_change_password=false WHERE email='regiane@barbearia.local'")
-# limpa resíduo
+# limpa resíduo — SEMPRE por padrão de nome, nunca só pelos ids desta execução. Uma rodada que
+# morra no meio deixaria cliente/assinatura órfãos pra sempre, e como o _smoke_regras confere
+# totais absolutos do dia, essa sobra derruba ELE (11 falhas fantasma até descobrir a origem).
 cur.execute("DELETE FROM comanda_itens WHERE descricao LIKE '[SG]%%'")
 cur.execute("DELETE FROM comissoes_pagas")
 cur.execute("DELETE FROM movimentos WHERE descricao LIKE '%%[SG]%%' OR categoria='Comissões'")
+cur.execute("DELETE FROM assinaturas WHERE cliente_id IN (SELECT id FROM clientes WHERE nome LIKE '[SG]%%')")
+cur.execute("DELETE FROM comandas WHERE cliente_id IN (SELECT id FROM clientes WHERE nome LIKE '[SG]%%')")
+cur.execute("DELETE FROM clientes WHERE nome LIKE '[SG]%%'")
 c.commit()
 
 print("== 1. Timezone (conexão em America/Sao_Paulo) ==")
@@ -114,8 +119,9 @@ cur.execute("DELETE FROM comanda_itens WHERE descricao LIKE '[SG]%%'")
 cur.execute("DELETE FROM comandas WHERE valor_total=0 AND id IN (SELECT comanda_id FROM comanda_itens) OR id IN (%s,%s,%s)", (cR1,cR2,cJ))
 cur.execute("DELETE FROM comandas WHERE id IN (%s,%s,%s)", (cR1,cR2,cJ))
 cur.execute("DELETE FROM movimentos WHERE descricao LIKE '%%[SG]%%' OR categoria='Comissões'")
-cur.execute("DELETE FROM assinaturas WHERE cliente_id=%s", (cli,))
-cur.execute("DELETE FROM clientes WHERE id=%s", (cli,))
+cur.execute("DELETE FROM assinaturas WHERE cliente_id IN (SELECT id FROM clientes WHERE nome LIKE '[SG]%%')")
+cur.execute("DELETE FROM comandas WHERE cliente_id IN (SELECT id FROM clientes WHERE nome LIKE '[SG]%%')")
+cur.execute("DELETE FROM clientes WHERE nome LIKE '[SG]%%'")
 cur.execute("UPDATE usuarios SET must_change_password=true")
 c.commit(); cur.close(); c.close()
 print(f"\n========== RESULTADO: {OK} PASS · {FAIL} FALHA ==========")
