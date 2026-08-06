@@ -242,8 +242,26 @@ Reinstalação limpa (teste): scale 0 → drop/create DB → scale 1 → `init_d
 ```bash
 # reset manual (o mesmo script que popula) — apaga e refaz com as datas atualizadas
 sudo docker exec $(sudo docker ps -q -f name=barbearia_demo) python -X utf8 seed_demo.py
-# reset diário, no crontab do servidor
-0 4 * * * docker exec $(docker ps -q -f name=barbearia_demo) python -X utf8 seed_demo.py >> /var/log/barbearia-demo.log 2>&1
+```
+
+O reset diário vai no **crontab do root** (`sudo crontab -e`), não no do usuário: o usuário comum não
+tem acesso ao `docker.sock` nem escreve em `/var/log`, e no cron não há como usar `sudo`. Caminho
+absoluto porque o cron roda com `PATH` mínimo:
+
+```
+0 4 * * * /usr/local/bin/reset-demo-barbearia.sh >> /var/log/barbearia-demo.log 2>&1
+```
+
+```sh
+# /usr/local/bin/reset-demo-barbearia.sh  (chmod +x)
+#!/bin/sh
+CID=$(/usr/bin/docker ps -q -f name=barbearia_demo)
+if [ -z "$CID" ]; then
+  echo "$(date -Is) [ERRO] container barbearia_demo nao encontrado"   # container reiniciando
+  exit 1
+fi
+echo "$(date -Is) reiniciando a demo no container $CID"
+/usr/bin/docker exec "$CID" python -X utf8 seed_demo.py
 ```
 
 ## Estrutura
