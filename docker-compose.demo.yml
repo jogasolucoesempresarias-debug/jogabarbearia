@@ -9,11 +9,15 @@
 # e precisa de reset — que aqui pode ser bruto, porque não há nada precioso no banco.
 #
 # ATENÇÃO: routers/services do Traefik precisam de nome ÚNICO por stack (aqui `demo`).
+#
+# Stack: barbearia_demo  →  serviço/container: barbearia_demo_app
+# Cuidado ao usar `docker ps -f name=barbearia`: esse filtro casa com a instância de PRODUÇÃO
+# da Regiane também. Sempre use o nome completo `barbearia_demo` nos comandos.
 
 version: '3.8'
 
 services:
-  demo-app:
+  app:
     image: ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:latest
     networks:
       - proxy

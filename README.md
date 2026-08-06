@@ -82,7 +82,7 @@ Fuso horário **America/Sao_Paulo** (app via `TZ` e conexão do banco via `optio
   o que demonstra o RBAC melhor do que explicar). `/setup` fica fechado lá. Populada por
   `seed_demo.py`, que **também é o reset**: apaga tudo e refaz, com **todas as datas relativas a
   hoje** (data fixa faria a demo parecer abandonada em dois meses). Cron sugerido:
-  `0 4 * * * docker exec $(docker ps -q -f name=demobarbearia) python -X utf8 seed_demo.py`.
+  `0 4 * * * docker exec $(docker ps -q -f name=barbearia_demo) python -X utf8 seed_demo.py`.
   Stack em `docker-compose.demo.yml`. **O seed se recusa a rodar sem `MODO_DEMO`** — ele apaga
   dados, e essa trava é o que impede o desastre de executá-lo na instância de um cliente.
 - **Alerta de WhatsApp**: quando o prospect clica em *Enviar*, a JOGA recebe um aviso via **UazAPI**
