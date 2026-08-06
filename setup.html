@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Entrega da instância</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .passo { display:flex; gap:10px; align-items:center; font-size:0.95rem; font-weight:700; margin-bottom:4px; }
+  .passo .n { width:24px; height:24px; flex:none; border-radius:8px; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:0.75rem; color:var(--accent); }
+  .link-box { font-family:'JetBrains Mono',monospace; font-size:0.72rem; word-break:break-all; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:11px; margin:10px 0; }
+  .resumo { display:grid; grid-template-columns:repeat(auto-fit,minmax(96px,1fr)); gap:8px; margin:12px 0; }
+  .resumo div { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px; text-align:center; }
+  .resumo .q { font-size:1.5rem; font-weight:700; color:var(--accent); }
+  .resumo .l { font-size:0.68rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.04em; }
+  .aviso { border-radius:10px; padding:11px 13px; font-size:0.82rem; margin-bottom:10px; line-height:1.5; }
+  .aviso.warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.3); color:#fbbf24; }
+  .aviso.err { background:rgba(248,113,113,0.08); border:1px solid rgba(248,113,113,0.3); color:var(--red); }
+  .aviso.ok { background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.3); color:var(--green); }
+  textarea { width:100%; min-height:110px; padding:11px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:0.72rem; }
+  .det { font-size:0.82rem; color:var(--text-dim); line-height:1.7; }
+  .det b { color:var(--text); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Entrega da instância</h1><div class="sub">Ficha da barbearia → sistema pronto</div></div></div></div>
+  <div id="painel"><div class="empty">Carregando…</div></div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+let S = null;
+
+async function carregar() {
+  S = await api('/api/setup');
+  render();
+}
+
+function render() {
+  if (S.modo_coleta) return renderHub();
+  const d = S.dados || {};
+  const aplicada = S.status === 'aplicada';
+  const link = S.token ? (location.origin + '/coleta?t=' + S.token) : null;
+  const equipe = (d.barbeiros||[]).filter(b=>(b.nome||'').trim());
+  const servs = (d.servicos||[]).filter(s=>s.usa&&(s.nome||'').trim());
+  const prods = d.vende_produto ? (d.produtos||[]).filter(p=>p.usa&&(p.nome||'').trim()) : [];
+  const planos = d.vende_plano ? (d.planos||[]).filter(p=>(p.nome||'').trim()) : [];
+  const logins = equipe.filter(b=>b.login);
+
+  let html = '';
+
+  if (aplicada) {
+    html += `<div class="aviso ok"><strong>Ficha já aplicada</strong><br>Esta instância foi entregue em ${fmtData(S.aplicada_em)}. A ficha e o link estão fechados.</div>`;
+  }
+
+  // 1 — link da ficha
+  html += `<div class="card">
+    <div class="passo"><span class="n">1</span> A ficha do cliente</div>
+    <div class="hint">Mande o link no WhatsApp pro dono preencher, ou abra você mesmo e preencha junto com ele. Salva sozinho e pode reabrir quantas vezes quiser.</div>
+    <div class="hint" style="margin-top:8px">Situação: <strong>${rotuloStatus(S.status)}</strong>${S.enviada_em?` · enviada em ${fmtData(S.enviada_em)}`:''}</div>
+    ${aplicada ? '' : (link ? `<div class="link-box">${escapeHtml(link)}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" style="flex:1" onclick="copiar('${link}')">Copiar link</button>
+          <a class="btn" style="flex:1;text-align:center;text-decoration:none" href="${link}" target="_blank">Abrir e preencher</a>
+        </div>
+        <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="gerarLink(true)">Gerar link novo (invalida o atual)</button>`
+      : `<button class="btn btn-primary btn-block" onclick="gerarLink(false)">Gerar o link da ficha</button>`)}
+  </div>`;
+
+  if (aplicada) { document.getElementById('painel').innerHTML = html + cardResumo(equipe, servs, prods, planos, logins, d); return; }
+
+  // 2 — partir de outra barbearia
+  html += `<div class="card">
+    <div class="passo"><span class="n">2</span> Começar de uma barbearia pronta</div>
+    <div class="hint">Cole aqui o JSON de outra instância pra ficha já nascer preenchida. Só sobrescreve a ficha — nada é criado ainda.</div>
+    <div style="display:flex;gap:8px;margin:10px 0">
+      <button class="btn" style="flex:1" onclick="exportar()">Exportar esta instância</button>
+      <button class="btn" style="flex:1" onclick="copiarFicha()">Copiar a ficha</button>
+    </div>
+    <div class="hint" style="margin-bottom:8px"><strong>Exportar esta instância</strong> pega os cadastros que já existem aqui (pra clonar uma barbearia pronta). <strong>Copiar a ficha</strong> pega o que o cliente preencheu e ainda não foi aplicado — é assim que a ficha viaja de uma instância de coleta pra instância definitiva.</div>
+    <textarea id="json-import" placeholder='Cole aqui o JSON de outra barbearia…'></textarea>
+    <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="importar()">Importar pra ficha</button>
+  </div>`;
+
+  // 3 — conferir e aplicar
+  html += cardResumo(equipe, servs, prods, planos, logins, d);
+
+  const impedido = S.em_operacao;
+  const jaTem = S.ja_tem || {};
+  const temCadastro = (jaTem.servicos||0) + (jaTem.profissionais||0) + (jaTem.planos||0) > 0;
+
+  html += `<div class="card">
+    <div class="passo"><span class="n">4</span> Aplicar</div>
+    <div class="hint">Cria tudo de uma vez só. Se algo falhar no meio, nada é criado.</div>
+    ${impedido ? `<div class="aviso err" style="margin-top:10px"><strong>Bloqueado.</strong> Esta instância já tem comandas ou lançamentos no caixa — está em operação. Aplicar agora criaria cadastro duplicado.</div>` : ''}
+    ${(!impedido && temCadastro) ? `<div class="aviso warn" style="margin-top:10px"><strong>Atenção:</strong> a instância já tem ${jaTem.profissionais} barbeiro(s), ${jaTem.servicos} serviço(s) e ${jaTem.planos} plano(s) cadastrados. O que a ficha criar vai <em>somar</em> a isso, não substituir.</div>` : ''}
+    ${(!impedido && !servs.length) ? `<div class="aviso warn" style="margin-top:10px">A ficha não tem nenhum serviço marcado. Preencha antes de aplicar.</div>` : ''}
+    <button class="btn btn-primary btn-block" style="margin-top:10px" ${(impedido||!servs.length||!equipe.length)?'disabled':''} onclick="aplicar()">Aplicar e entregar a instância</button>
+  </div>`;
+
+  document.getElementById('painel').innerHTML = html;
+}
+
+// ── Hub de coleta: nenhuma barbearia roda aqui, só as fichas dos prospects ──
+function renderHub() {
+  // A ficha id=1 é a "da própria instância" — num hub ela não significa nada, fica fora da lista.
+  const fichas = (S.fichas || []).filter(f => f.id !== 1);
+  let html = `<div class="card">
+    <div class="aviso ok" style="margin:0"><strong>Hub de coleta</strong><br>
+      Esta instância não é barbearia nenhuma: ela só guarda as fichas enquanto o cliente ainda não
+      tem servidor. Quando fechar, você cria a instância dele e <strong>cola a ficha lá</strong>.</div>
+  </div>
+
+  <div class="card">
+    <div class="passo"><span class="n">+</span> Nova ficha</div>
+    <div class="hint">Um nome só pra você achar depois — o nome de verdade da barbearia vem preenchido por ele.</div>
+    <div class="field" style="margin-top:10px"><label>Prospect</label>
+      <input id="nova-ficha" placeholder="Ex.: Zé — indicação do João" onkeydown="if(event.key==='Enter')criarFicha()"></div>
+    <button class="btn btn-primary btn-block" onclick="criarFicha()">Criar ficha e gerar link</button>
+  </div>`;
+
+  html += `<div class="section-title">Fichas (${fichas.length})</div>`;
+  html += fichas.length ? fichas.map(f => {
+    const link = f.token ? (location.origin + '/coleta?t=' + f.token) : null;
+    return `<div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="flex:1;font-weight:700">${escapeHtml(f.nome || 'sem nome')}</div>
+        <span class="badge ${f.status==='enviada'?'pago':'previsto'}">${rotuloStatus(f.status)}</span>
+      </div>
+      <div class="hint">${f.enviada_em ? 'enviada em ' + fmtData(f.enviada_em) : 'atualizada em ' + fmtData(f.atualizada_em)}</div>
+      ${link ? `<div class="link-box">${escapeHtml(link)}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-sm" onclick="copiar('${link}')">Copiar link</button>
+          <a class="btn btn-sm" style="text-decoration:none" href="${link}" target="_blank">Abrir</a>
+          <button class="btn btn-sm btn-primary" onclick="copiarFichaDe(${f.id})">Copiar a ficha</button>
+          <button class="btn btn-sm btn-danger" onclick="apagarFicha(${f.id}, '${escapeHtml(f.nome||'').replace(/'/g,"\\'")}')">Apagar</button>
+        </div>` : `<button class="btn btn-sm" onclick="gerarLink(false, ${f.id})">Gerar link</button>`}
+    </div>`;
+  }).join('') : '<div class="empty">Nenhuma ficha ainda. Crie a primeira aí em cima.</div>';
+
+  html += `<div class="card"><div class="passo"><span class="n">↓</span> Levar pra instância do cliente</div>
+    <div class="hint">Clique em <strong>Copiar a ficha</strong>, abra o <code>/setup</code> da instância nova,
+    cole no campo de importar e clique em <strong>Aplicar</strong>. O cliente nunca vê este endereço.</div>
+    <textarea id="json-import" style="margin-top:10px" placeholder="a ficha copiada aparece aqui"></textarea></div>`;
+
+  document.getElementById('painel').innerHTML = html;
+}
+
+async function criarFicha() {
+  const nome = document.getElementById('nova-ficha').value.trim();
+  if (!nome) return toast('Dê um nome pra ficha.','err');
+  try { await api('/api/setup/fichas', { method:'POST', body:{ nome } }); toast('Ficha criada.','ok'); carregar(); }
+  catch (e) { toast(e.message,'err'); }
+}
+async function copiarFichaDe(id) {
+  try {
+    const j = await api('/api/setup/fichas/' + id);
+    const txt = JSON.stringify(j.dados || {}, null, 2);
+    const box = document.getElementById('json-import');
+    if (box) box.value = txt;
+    navigator.clipboard.writeText(txt).then(
+      () => toast('Ficha copiada — cole no /setup do cliente.','ok'),
+      () => toast('Copie o texto da caixa no fim da página.','ok'));
+  } catch (e) { toast(e.message,'err'); }
+}
+async function apagarFicha(id, nome) {
+  if (!confirm(`Apagar a ficha "${nome}"? O link dela para de funcionar.`)) return;
+  try { await api('/api/setup/fichas/' + id, { method:'DELETE' }); toast('Apagada.','ok'); carregar(); }
+  catch (e) { toast(e.message,'err'); }
+}
+
+function cardResumo(equipe, servs, prods, planos, logins, d) {
+  return `<div class="card">
+    <div class="passo"><span class="n">3</span> O que vai ser criado</div>
+    <div class="resumo">
+      <div><div class="q">${equipe.length}</div><div class="l">Barbeiros</div></div>
+      <div><div class="q">${logins.length}</div><div class="l">Logins</div></div>
+      <div><div class="q">${servs.length}</div><div class="l">Serviços</div></div>
+      <div><div class="q">${prods.length}</div><div class="l">Produtos</div></div>
+      <div><div class="q">${planos.length}</div><div class="l">Planos</div></div>
+    </div>
+    <div class="det">
+      <b>Barbearia:</b> ${escapeHtml((d.barbearia||{}).nome) || '<span class="muted">— sem nome —</span>'}<br>
+      ${equipe.map(b=>`<b>${escapeHtml(b.nome)}</b> · ${b.comissao_pct||45}% ${b.dono?'· <span style="color:var(--yellow,#fbbf24)">dono, não recebe comissão</span>':''} ${b.login?'· com login':'· sem login'}`).join('<br>') || '<span class="muted">nenhum barbeiro</span>'}
+      ${servs.length?`<br><br><b>Serviços:</b> ${servs.map(s=>`${escapeHtml(s.nome)} ${money(s.preco)}/${s.duracao_min}min`).join(' · ')}`:''}
+      ${prods.length?`<br><br><b>Produtos:</b> ${prods.map(p=>`${escapeHtml(p.nome)} ${money(p.preco)}`).join(' · ')}`:''}
+      ${planos.length?`<br><br><b>Planos:</b><br>${planos.map(p=>`${escapeHtml(p.nome)} · ${money(p.valor_mensal)}/mês · ${(p.servicos||[]).join(', ')||'sem serviço'} · comissão: ${rotuloRegra(p)}`).join('<br>')}`:''}
+    </div>
+  </div>`;
+}
+
+const REGRA_TXT = { tabela:'comissão normal sobre a tabela', fixo:'R$ fixo por atendimento',
+                    bolo:'bolo rateado pela produção', zero:'sem comissão' };
+function rotuloRegra(p) {
+  const t = REGRA_TXT[p.regra||'bolo'] || p.regra;
+  return p.regra==='fixo' ? `${t} (${money(p.valor_fixo||0)})` : t;
+}
+function rotuloStatus(s) {
+  return { vazia:'ainda não começou', rascunho:'em preenchimento', enviada:'enviada pelo cliente',
+           aplicada:'aplicada' }[s] || s;
+}
+
+async function gerarLink(regerar, fichaId) {
+  if (regerar && !confirm('Gerar um link novo invalida o que já foi enviado pro cliente. Continuar?')) return;
+  try { await api('/api/setup/link', { method:'POST', body:{ ficha_id: fichaId || 1 } }); toast('Link gerado.','ok'); carregar(); }
+  catch (e) { toast(e.message,'err'); }
+}
+function copiar(link) {
+  navigator.clipboard.writeText(link).then(()=>toast('Link copiado!','ok'), ()=>toast('Copie manualmente.','err'));
+}
+async function exportar() {
+  try {
+    const j = await api('/api/setup/exportar');
+    document.getElementById('json-import').value = JSON.stringify(j.dados, null, 2);
+    toast('Exportado — copie o texto da caixa.','ok');
+  } catch (e) { toast(e.message,'err'); }
+}
+function copiarFicha() {
+  // A ficha preenchida (ainda não aplicada) — pra levar pra instância definitiva do cliente.
+  const txt = JSON.stringify(S.dados || {}, null, 2);
+  document.getElementById('json-import').value = txt;
+  navigator.clipboard.writeText(txt).then(
+    () => toast('Ficha copiada — cole no /setup da instância do cliente.','ok'),
+    () => toast('Copie o texto da caixa abaixo.','ok'));
+}
+async function importar() {
+  const txt = document.getElementById('json-import').value.trim();
+  if (!txt) return toast('Cole o JSON primeiro.','err');
+  let dados;
+  try { dados = JSON.parse(txt); } catch { return toast('JSON inválido.','err'); }
+  if (dados.dados) dados = dados.dados;          // aceita o export inteiro ou só o miolo
+  if (!confirm('Sobrescrever a ficha com esse conteúdo?')) return;
+  try { await api('/api/setup', { method:'PUT', body:{ dados } }); toast('Ficha atualizada.','ok'); carregar(); }
+  catch (e) { toast(e.message,'err'); }
+}
+async function aplicar() {
+  if (!confirm('Criar a barbearia inteira agora? Isso roda uma vez só.')) return;
+  try {
+    const j = await api('/api/setup/aplicar', { method:'POST', body:{ dados: S.dados } });
+    const c = j.criados;
+    let html = `<div class="card"><div class="aviso ok"><strong>Instância entregue!</strong><br>
+      ${c.profissionais} barbeiro(s), ${c.servicos} serviço(s), ${c.produtos} produto(s), ${c.planos} plano(s).</div>`;
+    if (j.logins.length) {
+      html += `<div class="section-title">Acessos criados</div><div class="det">
+        ${j.logins.map(l=>`<b>${escapeHtml(l.nome)}</b> (${l.papel})<br><span style="font-family:'JetBrains Mono',monospace;font-size:0.76rem">${escapeHtml(l.email)}</span><br>`).join('<br>')}
+        <br>Senha inicial de todos: <b style="font-family:'JetBrains Mono',monospace">${escapeHtml(j.senha_inicial)}</b><br>
+        <span class="muted">Cada um troca no primeiro acesso.</span></div>`;
+    }
+    html += `<a class="btn btn-primary btn-block" href="/" style="margin-top:14px;text-decoration:none;text-align:center">Ir pra agenda</a></div>`;
+    document.getElementById('painel').innerHTML = html;
+    window.scrollTo(0,0);
+  } catch (e) { toast(e.message,'err'); }
+}
+
+renderShell('/setup');
+carregar();
+</script>
+</body>
+</html>

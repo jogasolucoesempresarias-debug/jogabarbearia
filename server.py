@@ -3,9 +3,15 @@ JOGA Barbearia — Backend (Flask + Waitress)
 Rode: python -X utf8 server.py   ·   Acesse: http://localhost:5000
 """
 import os
+import json
+import hmac
 import math
+import secrets
 import calendar
+import threading
 import functools
+import urllib.request
+import urllib.error
 from datetime import date, datetime, time, timedelta
 
 import psycopg2
@@ -120,6 +126,60 @@ def rate_limit_ok(ip, maximo=5, janela_seg=600):
     hist.append(agora)
     _RATE[ip] = hist
     return True
+
+
+# ── Alerta de WhatsApp (UazAPI) ───────────────────────────────────────
+# Mesmo contrato do DanfeZap / joga-diagnostico-api (POST /send/text, header `token`), mas com
+# urllib da stdlib: é UM post, não vale puxar httpx pra dentro da imagem.
+# ALERTAS_ATIVO é a trava mestra — desligado, nada é enviado de verdade (protege dev e os smokes,
+# que criam e "enviam" fichas o tempo todo).
+UAZAPI_URL = os.getenv('UAZAPI_URL', 'https://free.uazapi.com').rstrip('/')
+UAZAPI_TOKEN = os.getenv('UAZAPI_TOKEN', '').strip()
+ALERTAS_ATIVO = os.getenv('ALERTAS_ATIVO', '').strip().lower() in ('1', 'true', 'sim')
+ALERTA_WHATSAPP = [n.strip() for n in os.getenv('ALERTA_WHATSAPP', '').split(',') if n.strip()]
+
+
+def normalizar_telefone_br(telefone):
+    """Canônico da UazAPI: 55 + DDD + 8 dígitos (sem o "9 extra" do celular)."""
+    numero = ''.join(filter(str.isdigit, str(telefone or '')))
+    if not numero.startswith('55'):
+        numero = '55' + numero
+    if len(numero) == 13 and numero[4] == '9':
+        numero = numero[:4] + numero[5:]
+    return numero
+
+
+def _uazapi_enviar(numero, texto):
+    req = urllib.request.Request(
+        f"{UAZAPI_URL}/send/text",
+        data=json.dumps({'number': normalizar_telefone_br(numero), 'text': texto}).encode(),
+        headers={'Content-Type': 'application/json', 'token': UAZAPI_TOKEN},
+        method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return 200 <= r.status < 300, f"status {r.status}"
+    except urllib.error.HTTPError as e:
+        return False, f"status {e.code}: {e.read().decode(errors='ignore')[:200]}"
+    except Exception as e:                                   # rede caiu, DNS, timeout…
+        return False, str(e)
+
+
+def alerta_whatsapp(texto):
+    """Dispara em BACKGROUND: o dono acabou de clicar 'enviar' e não pode esperar rede.
+    Falha de WhatsApp nunca derruba o salvamento da ficha — no máximo vira log."""
+    if not ALERTAS_ATIVO:
+        print(f"[alerta] desligado (ALERTAS_ATIVO=0). Enviaria:\n{texto}")
+        return
+    if not (UAZAPI_TOKEN and ALERTA_WHATSAPP):
+        print("[alerta] ligado, mas falta UAZAPI_TOKEN ou ALERTA_WHATSAPP — nada enviado.")
+        return
+
+    def _worker():
+        for numero in ALERTA_WHATSAPP:
+            ok, detalhe = _uazapi_enviar(numero, texto)
+            print(f"[alerta] {numero}: {'enviado' if ok else 'FALHOU'} ({detalhe})")
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def visita_coberta_no_dia(cliente_id, d, exclude_comanda_id=None):
@@ -277,8 +337,7 @@ def cadastro_page():
 def cadastro_contexto():
     """Marca da barbearia p/ a página pública ficar com a identidade da instância. Read-only."""
     c = cfg()
-    return jsonify({'ok': True, 'marca_nome': c.get('marca_nome') or 'Barbearia',
-                    'marca_cor': c.get('marca_cor') or '#38bdf8'})
+    return jsonify({'ok': True, 'marca_nome': c.get('marca_nome') or 'Barbearia'})
 
 
 @app.route('/api/cadastro/publico', methods=['POST'])
@@ -302,10 +361,363 @@ def cadastro_publico():
     return jsonify({'ok': True})
 
 
+# ══════════════════════════════════════════════════════════════════════
+# Onboarding: ficha de coleta (a barbearia preenche) → aplicar (a JOGA entrega pronto)
+# ══════════════════════════════════════════════════════════════════════
+# A entrega da JOGA é assistida: o cliente não encara um wizard no primeiro login. Ele preenche
+# só o que SÓ ELE sabe (preços, equipe, horário) numa página pública por link com token, e a JOGA
+# revisa e aplica antes do treinamento. Tudo o mais já vai pré-preenchido no PRESET abaixo.
+PRESET_FICHA = {
+    'barbearia': {'nome': '', 'endereco': '', 'whatsapp': ''},
+    'barbeiros': [{'nome': '', 'dono': True, 'comissao_pct': 45, 'login': True}],
+    'servicos': [
+        {'nome': 'Cabelo', 'preco': 36, 'duracao_min': 30, 'usa': True},
+        {'nome': 'Barba', 'preco': 29, 'duracao_min': 30, 'usa': True},
+        {'nome': 'Cabelo + Barba', 'preco': 65, 'duracao_min': 60, 'usa': True},
+        {'nome': 'Infantil', 'preco': 40, 'duracao_min': 30, 'usa': True},
+        {'nome': 'Acabamento', 'preco': 25, 'duracao_min': 15, 'usa': True},
+        {'nome': 'Sobrancelha', 'preco': 18, 'duracao_min': 15, 'usa': True},
+    ],
+    'vende_produto': True,
+    'produtos': [
+        {'nome': 'Pomada', 'preco': 35, 'usa': True},
+        {'nome': 'Balm', 'preco': 45, 'usa': True},
+        {'nome': 'Shampoo', 'preco': 50, 'usa': True},
+        {'nome': 'Minoxidil', 'preco': 70, 'usa': False},
+    ],
+    'horarios': {'0': None, '1': {'abre': '08:00', 'fecha': '19:00'}, '2': {'abre': '08:00', 'fecha': '19:00'},
+                 '3': {'abre': '08:00', 'fecha': '19:00'}, '4': {'abre': '08:00', 'fecha': '19:00'},
+                 '5': {'abre': '08:00', 'fecha': '19:00'}, '6': {'abre': '08:00', 'fecha': '16:00'}},
+    'vende_plano': False,
+    'planos': [],
+    'comissao_padrao': 45,
+    'formas_pagamento': ['Dinheiro', 'Pix', 'Cartão'],
+}
+
+
+# MODO_COLETA=1 transforma a instância num HUB: ela não é barbearia nenhuma, só guarda as fichas
+# dos prospects (uma por barbearia em negociação) enquanto o servidor definitivo não existe.
+# Assim não se abre instância pra quem ainda não fechou. Fechou → cria a instância real e cola a
+# ficha lá. Num hub o "aplicar" é bloqueado: ele nunca vira barbearia.
+MODO_COLETA = os.getenv('MODO_COLETA', '').strip() in ('1', 'true', 'sim')
+
+
+def ficha(ficha_id=1):
+    row = q_one("SELECT * FROM setup_coleta WHERE id=%s", (ficha_id,)) or {}
+    dados = row.get('dados') or {}
+    if not dados:
+        dados = json.loads(json.dumps(PRESET_FICHA))     # cópia funda do preset
+    return row, dados
+
+
+def ficha_por_token(token):
+    """Resolve a ficha pelo token do link. Só responde enquanto não foi aplicada."""
+    if not token:
+        return None
+    for row in q_all("SELECT id, nome, status, token FROM setup_coleta WHERE token IS NOT NULL"):
+        if hmac.compare_digest(str(token), str(row['token'])) and row['status'] != 'aplicada':
+            return row
+    return None
+
+
+@app.route('/coleta', methods=['GET'])
+def coleta_page():
+    if not ficha_por_token(request.args.get('t')):
+        return jsonify({'ok': False, 'error': 'Ficha indisponível'}), 404
+    return send_from_directory(BASE_DIR, 'coleta.html')
+
+
+@app.route('/api/coleta', methods=['GET'])
+def coleta_get():
+    achou = ficha_por_token(request.args.get('t'))
+    if not achou:
+        return jsonify({'ok': False, 'error': 'Ficha indisponível'}), 404
+    row, dados = ficha(achou['id'])
+    return jsonify({'ok': True, 'dados': dados, 'status': row.get('status')})
+
+
+@app.route('/api/coleta', methods=['PUT'])
+def coleta_save():
+    """Salvamento automático — barbeiro é interrompido no meio, a ficha não pode se perder."""
+    d = request.get_json() or {}
+    achou = ficha_por_token(d.get('t'))
+    if not achou:
+        return jsonify({'ok': False, 'error': 'Ficha indisponível'}), 404
+    enviar = bool(d.get('enviar'))
+    dados = d.get('dados') or {}
+    execute("""UPDATE setup_coleta SET dados=%s, status=%s, atualizada_em=NOW(),
+               enviada_em=CASE WHEN %s THEN NOW() ELSE enviada_em END WHERE id=%s""",
+            (Json(dados), 'enviada' if enviar else 'rascunho', enviar, achou['id']))
+    if enviar:
+        alerta_whatsapp(_texto_alerta_ficha(dados, achou))
+    return jsonify({'ok': True})
+
+
+def _texto_alerta_ficha(dados, ficha_row):
+    """Aviso curto no WhatsApp: quem preencheu, o tamanho da coisa e o link pra ver."""
+    nome = ((dados.get('barbearia') or {}).get('nome') or '').strip() or ficha_row.get('nome') or 'Barbearia'
+    barbeiros = len([b for b in (dados.get('barbeiros') or []) if (b.get('nome') or '').strip()])
+    servicos = len([s for s in (dados.get('servicos') or []) if s.get('usa') and (s.get('nome') or '').strip()])
+    planos = len(dados.get('planos') or []) if dados.get('vende_plano') else 0
+    origem = request.url_root.rstrip('/')
+    return (f"💈 *Ficha preenchida* — {nome}\n\n"
+            f"{barbeiros} barbeiro(s) · {servicos} serviço(s) · {planos} plano(s)\n\n"
+            f"Ver o que ele preencheu:\n{origem}/coleta?t={ficha_row['token']}\n\n"
+            f"Painel: {origem}/setup")
+
+
+# ── Lado da JOGA: revisar, gerar o link, exportar e aplicar ───────────
+@app.route('/setup', methods=['GET'])
+@login_required
+def setup_page():
+    if session.get('role') != 'dono':
+        return redirect('/')
+    return send_from_directory(BASE_DIR, 'setup.html')
+
+
+def instancia_em_operacao():
+    """A instância já rodou de verdade? Se sim, aplicar a ficha viraria duplicata."""
+    return bool(scalar("SELECT 1 FROM comandas LIMIT 1") or scalar("SELECT 1 FROM movimentos LIMIT 1"))
+
+
+@app.route('/api/setup', methods=['GET'])
+@login_required
+@role_required('dono')
+def setup_get():
+    row, dados = ficha()
+    fichas = q_all("""SELECT id, nome, status, token, enviada_em, atualizada_em
+                      FROM setup_coleta ORDER BY id""") if MODO_COLETA else []
+    return jsonify({'ok': True, 'dados': dados, 'status': row.get('status'),
+                    'token': row.get('token'), 'enviada_em': row.get('enviada_em'),
+                    'aplicada_em': row.get('aplicada_em'),
+                    'modo_coleta': MODO_COLETA, 'fichas': fichas,
+                    'em_operacao': instancia_em_operacao(),
+                    'ja_tem': {
+                        'profissionais': scalar("SELECT COUNT(*) FROM profissionais"),
+                        'servicos': scalar("SELECT COUNT(*) FROM servicos"),
+                        'produtos': scalar("SELECT COUNT(*) FROM produtos"),
+                        'planos': scalar("SELECT COUNT(*) FROM planos"),
+                        'usuarios': scalar("SELECT COUNT(*) FROM usuarios"),
+                    }})
+
+
+@app.route('/api/setup', methods=['PUT'])
+@login_required
+@role_required('dono')
+def setup_save():
+    """A JOGA corrige a ficha por cima do que o cliente mandou."""
+    d = request.get_json() or {}
+    execute("UPDATE setup_coleta SET dados=%s, atualizada_em=NOW() WHERE id=1",
+            (Json(d.get('dados') or {}),))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/setup/link', methods=['POST'])
+@login_required
+@role_required('dono')
+def setup_link():
+    """Gera (ou regenera) o token do link de uma ficha. Regenerar invalida o link antigo."""
+    # silent=True: sem isso um POST sem corpo estoura 400 no get_json() antes de chegar aqui.
+    fid = (request.get_json(silent=True) or {}).get('ficha_id') or 1
+    token = secrets.token_urlsafe(24)
+    execute("UPDATE setup_coleta SET token=%s, status=CASE WHEN status='vazia' THEN 'rascunho' "
+            "ELSE status END WHERE id=%s", (token, fid))
+    return jsonify({'ok': True, 'token': token})
+
+
+# ── Hub de coleta: uma ficha por prospect ─────────────────────────────
+@app.route('/api/setup/fichas', methods=['POST'])
+@login_required
+@role_required('dono')
+def ficha_criar():
+    if not MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Esta instância não é um hub de coleta.'}), 400
+    nome = ((request.get_json() or {}).get('nome') or '').strip()
+    if not nome:
+        return jsonify({'ok': False, 'error': 'Dê um nome pra ficha (o prospect).'}), 400
+    token = secrets.token_urlsafe(24)
+    row = execute("""INSERT INTO setup_coleta (nome, token, status, dados)
+                     VALUES (%s,%s,'rascunho','{}'::jsonb) RETURNING id""", (nome, token), returning=True)
+    return jsonify({'ok': True, 'id': row['id'], 'token': token})
+
+
+@app.route('/api/setup/fichas/<int:fid>', methods=['GET'])
+@login_required
+@role_required('dono')
+def ficha_ler(fid):
+    row, dados = ficha(fid)
+    if not row:
+        return jsonify({'ok': False, 'error': 'Ficha não encontrada'}), 404
+    return jsonify({'ok': True, 'id': fid, 'nome': row.get('nome'), 'status': row.get('status'),
+                    'token': row.get('token'), 'dados': dados})
+
+
+@app.route('/api/setup/fichas/<int:fid>', methods=['DELETE'])
+@login_required
+@role_required('dono')
+def ficha_apagar(fid):
+    if not MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Esta instância não é um hub de coleta.'}), 400
+    if fid == 1:
+        return jsonify({'ok': False, 'error': 'A ficha da própria instância não pode ser apagada.'}), 400
+    execute("DELETE FROM setup_coleta WHERE id=%s", (fid,))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/setup/exportar')
+@login_required
+@role_required('dono')
+def setup_exportar():
+    """Exporta a configuração REAL desta instância como ficha — é o 'copiar da barbearia X'."""
+    c = cfg()
+    profs = q_all("SELECT nome, comissao_pct, recebe_comissao FROM profissionais WHERE ativo ORDER BY id")
+    servs = q_all("SELECT nome, preco, duracao_min FROM servicos WHERE ativo ORDER BY id")
+    prods = q_all("SELECT nome, preco FROM produtos WHERE ativo ORDER BY id")
+    planos = []
+    for p in q_all("SELECT * FROM planos WHERE ativo ORDER BY id"):
+        nomes = [r['nome'] for r in q_all(
+            """SELECT s.nome FROM plano_servicos ps JOIN servicos s ON s.id=ps.servico_id
+               WHERE ps.plano_id=%s""", (p['id'],))]
+        planos.append({'nome': p['nome'], 'valor_mensal': p['valor_mensal'],
+                       'servicos': nomes, 'dias': p['dias_inclusos'] or [1, 2, 3],
+                       'regra': p['comissao_assinante_regra'] or 'bolo',
+                       'valor_fixo': p['comissao_assinante_valor']})
+    return jsonify({'ok': True, 'dados': {
+        'barbearia': {'nome': c.get('marca_nome') or '', 'endereco': '', 'whatsapp': ''},
+        'barbeiros': [{'nome': p['nome'], 'dono': not p['recebe_comissao'],
+                       'comissao_pct': p['comissao_pct'], 'login': True} for p in profs],
+        'servicos': [{**s, 'usa': True} for s in servs],
+        'vende_produto': bool(prods), 'produtos': [{**p, 'usa': True} for p in prods],
+        'horarios': c.get('horarios') or PRESET_FICHA['horarios'],
+        'vende_plano': bool(planos), 'planos': planos,
+        'comissao_padrao': c.get('comissao_padrao') or 45,
+        'formas_pagamento': c.get('formas_pagamento') or ['Dinheiro', 'Pix', 'Cartão'],
+    }})
+
+
+def _email_login(nome, usados):
+    """primeiro nome → primeironome@barbearia.local, com sufixo se repetir."""
+    import unicodedata
+    base = (nome or '').strip().split(' ')[0].lower() or 'usuario'
+    base = unicodedata.normalize('NFKD', base).encode('ascii', 'ignore').decode()
+    base = ''.join(ch for ch in base if ch.isalnum()) or 'usuario'
+    email, n = f"{base}@barbearia.local", 2
+    while email in usados:
+        email, n = f"{base}{n}@barbearia.local", n + 1
+    usados.add(email)
+    return email
+
+
+@app.route('/api/setup/aplicar', methods=['POST'])
+@login_required
+@role_required('dono')
+def setup_aplicar():
+    """Cria a barbearia inteira a partir da ficha, numa transação só. Roda UMA vez."""
+    if MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Esta instância é o hub de coleta — ela não vira '
+                                              'barbearia. Copie a ficha e aplique na instância do '
+                                              'cliente.'}), 400
+    row = q_one("SELECT status FROM setup_coleta WHERE id=1") or {}
+    if row.get('status') == 'aplicada':
+        return jsonify({'ok': False, 'error': 'Esta ficha já foi aplicada nesta instância.'}), 409
+    if instancia_em_operacao():
+        return jsonify({'ok': False, 'error': 'Esta instância já tem comandas/lançamentos — '
+                                              'aplicar agora duplicaria cadastro.'}), 409
+    d = (request.get_json() or {}).get('dados') or ficha()[1]
+    senha_inicial = os.getenv('SEED_SENHA_INICIAL', 'joga123')
+
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        criados = {'profissionais': 0, 'usuarios': 0, 'servicos': 0, 'produtos': 0, 'planos': 0}
+        logins = []
+        usados = {r['email'] for r in q_all("SELECT email FROM usuarios")}
+
+        # Barbeiros (+ login). "dono" = não recebe comissão sobre o próprio trabalho.
+        cores = list(CORES_AGENDA)
+        for i, b in enumerate([x for x in (d.get('barbeiros') or []) if (x.get('nome') or '').strip()]):
+            eh_dono = bool(b.get('dono'))
+            cur.execute("""INSERT INTO profissionais (nome, comissao_pct, cor_agenda, recebe_comissao)
+                           VALUES (%s,%s,%s,%s) RETURNING id""",
+                        (b['nome'].strip(), b.get('comissao_pct') or 45,
+                         cores[i % len(cores)], not eh_dono))
+            pid = cur.fetchone()['id']
+            criados['profissionais'] += 1
+            if b.get('login'):
+                email = (b.get('email') or '').strip().lower() or _email_login(b['nome'], usados)
+                cur.execute("""INSERT INTO usuarios (nome, email, password_hash, role, profissional_id,
+                                   must_change_password)
+                               VALUES (%s,%s,%s,%s,%s,true)""",
+                            (b['nome'].strip(), email, generate_password_hash(senha_inicial),
+                             'dono' if eh_dono else 'barbeiro', pid))
+                criados['usuarios'] += 1
+                logins.append({'nome': b['nome'].strip(), 'email': email,
+                               'papel': 'dono' if eh_dono else 'barbeiro'})
+
+        # Serviços (só os marcados) — guarda o id por nome p/ ligar nos planos
+        serv_id = {}
+        for s in (d.get('servicos') or []):
+            if not s.get('usa') or not (s.get('nome') or '').strip():
+                continue
+            cur.execute("INSERT INTO servicos (nome, preco, duracao_min) VALUES (%s,%s,%s) RETURNING id",
+                        (s['nome'].strip(), s.get('preco') or 0, s.get('duracao_min') or 30))
+            serv_id[s['nome'].strip()] = cur.fetchone()['id']
+            criados['servicos'] += 1
+
+        if d.get('vende_produto'):
+            for p in (d.get('produtos') or []):
+                if not p.get('usa') or not (p.get('nome') or '').strip():
+                    continue
+                cur.execute("INSERT INTO produtos (nome, preco) VALUES (%s,%s)",
+                            (p['nome'].strip(), p.get('preco') or 0))
+                criados['produtos'] += 1
+
+        if d.get('vende_plano'):
+            for pl in (d.get('planos') or []):
+                if not (pl.get('nome') or '').strip():
+                    continue
+                regra = pl.get('regra') if pl.get('regra') in REGRAS_ASSINANTE else 'bolo'
+                cur.execute("""INSERT INTO planos (nome, valor_mensal, dias_inclusos,
+                                   comissao_assinante_regra, comissao_assinante_valor)
+                               VALUES (%s,%s,%s,%s,%s) RETURNING id""",
+                            (pl['nome'].strip(), pl.get('valor_mensal') or 0,
+                             Json(pl.get('dias') or [1, 2, 3]), regra,
+                             pl.get('valor_fixo') if regra == 'fixo' else None))
+                plano_id = cur.fetchone()['id']
+                criados['planos'] += 1
+                for nome_s in (pl.get('servicos') or []):
+                    if nome_s in serv_id:
+                        cur.execute("""INSERT INTO plano_servicos (plano_id, servico_id)
+                                       VALUES (%s,%s) ON CONFLICT DO NOTHING""",
+                                    (plano_id, serv_id[nome_s]))
+
+        cur.execute("""UPDATE configuracoes SET marca_nome=COALESCE(%s,marca_nome),
+                         horarios=COALESCE(%s,horarios), formas_pagamento=COALESCE(%s,formas_pagamento),
+                         comissao_padrao=COALESCE(%s,comissao_padrao) WHERE id=1""",
+                    ((d.get('barbearia') or {}).get('nome') or None,
+                     Json(d['horarios']) if d.get('horarios') else None,
+                     Json(d['formas_pagamento']) if d.get('formas_pagamento') else None,
+                     d.get('comissao_padrao')))
+        cur.execute("""UPDATE setup_coleta SET dados=%s, status='aplicada', aplicada_em=NOW(),
+                       token=NULL, atualizada_em=NOW() WHERE id=1""", (Json(d),))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'ok': False, 'error': f'Nada foi criado — a aplicação falhou: {e}'}), 500
+    finally:
+        cur.close(); conn.close()
+
+    return jsonify({'ok': True, 'criados': criados, 'logins': logins, 'senha_inicial': senha_inicial})
+
+
 @app.route('/<path:rota>')
 @app.route('/', endpoint='root')
 @login_required
 def pagina(rota=''):
+    # No hub, a "home" é a lista de fichas — cair na agenda de uma barbearia que não existe
+    # faria a instância parecer quebrada.
+    if MODO_COLETA and not rota:
+        return redirect('/setup')
     arquivo = PAGINAS.get('/' + rota if rota else '/')
     if not arquivo:
         return jsonify({'ok': False, 'error': 'Página não encontrada'}), 404
@@ -315,7 +727,6 @@ def pagina(rota=''):
 # ── Auth API ──────────────────────────────────────────────────────────
 @app.route('/api/login', methods=['POST'])
 def login_post():
-    import hmac
     d = request.get_json() or {}
     email = (d.get('email') or '').strip().lower()
     senha = d.get('senha') or ''
@@ -374,7 +785,8 @@ def me():
     c = cfg()
     return jsonify({'ok': True, 'nome': session.get('nome'), 'role': session.get('role'),
                     'profissional_id': session.get('profissional_id'),
-                    'marca': {'nome': c.get('marca_nome'), 'cor': c.get('marca_cor')}})
+                    'modo_coleta': MODO_COLETA,
+                    'marca': {'nome': c.get('marca_nome')}})
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -384,6 +796,21 @@ def me():
 @login_required
 def prof_list():
     return jsonify({'ok': True, 'rows': q_all("SELECT * FROM profissionais WHERE ativo ORDER BY nome")})
+
+
+# Cores das colunas da agenda. Barbearia com 3–4 barbeiros precisa distinguir as colunas de bate-
+# pronto; sem isso todo mundo nasce azul e a agenda vira um borrão. (Isto é cor DE AGENDA, não
+# "cor da marca" — o tema do app é fixo.)
+CORES_AGENDA = ['#38bdf8', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#fb923c', '#22d3ee']
+
+
+def proxima_cor_agenda():
+    """Primeira cor da paleta que ainda não está em uso; se todas estiverem, roda pelo total."""
+    usadas = {r['cor_agenda'] for r in q_all("SELECT cor_agenda FROM profissionais WHERE ativo")}
+    for cor in CORES_AGENDA:
+        if cor not in usadas:
+            return cor
+    return CORES_AGENDA[len(usadas) % len(CORES_AGENDA)]
 
 
 @app.route('/api/profissionais', methods=['POST'])
@@ -396,7 +823,8 @@ def prof_create():
     recebe = d.get('recebe_comissao')
     recebe = True if recebe is None else bool(recebe)
     row = execute("INSERT INTO profissionais (nome, comissao_pct, cor_agenda, recebe_comissao) VALUES (%s,%s,%s,%s) RETURNING *",
-                  (d['nome'].strip(), d.get('comissao_pct') or 45, d.get('cor_agenda') or '#38bdf8', recebe), returning=True)
+                  (d['nome'].strip(), d.get('comissao_pct') or 45,
+                   d.get('cor_agenda') or proxima_cor_agenda(), recebe), returning=True)
     return jsonify({'ok': True, 'row': row})
 
 
@@ -608,6 +1036,23 @@ def plano_list():
     return jsonify({'ok': True, 'rows': rows})
 
 
+REGRAS_ASSINANTE = ('bolo', 'tabela', 'fixo', 'zero')
+
+
+def valida_regra_assinante(d):
+    """(regra, valor, erro) — regra de comissão do assinante vinda do front. 'fixo' exige o R$."""
+    regra = d.get('comissao_assinante_regra')
+    if regra is not None and regra not in REGRAS_ASSINANTE:
+        return None, None, f"Regra de comissão inválida: {regra}"
+    try:
+        valor = float(d['comissao_assinante_valor']) if d.get('comissao_assinante_valor') else None
+    except (TypeError, ValueError):
+        return None, None, 'Valor da comissão do assinante inválido'
+    if regra == 'fixo' and not valor:
+        return None, None, "Na regra 'fixo' informe o R$ por atendimento do assinante."
+    return regra, valor, None
+
+
 @app.route('/api/planos', methods=['POST'])
 @login_required
 @role_required('dono')
@@ -615,12 +1060,14 @@ def plano_create():
     d = request.get_json() or {}
     if not (d.get('nome') or '').strip():
         return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
+    regra, valor_regra, erro = valida_regra_assinante(d)
+    if erro:
+        return jsonify({'ok': False, 'error': erro}), 400
     row = execute("""INSERT INTO planos (nome, valor_mensal, limite_uso, dias_inclusos,
                      comissao_assinante_regra, comissao_assinante_valor)
                      VALUES (%s,%s,%s,%s,%s,%s) RETURNING *""",
                   (d['nome'].strip(), d.get('valor_mensal') or 0, d.get('limite_uso') or None,
-                   Json(d.get('dias_inclusos') or [1, 2, 3]),
-                   d.get('comissao_assinante_regra') or 'tabela', d.get('comissao_assinante_valor') or None),
+                   Json(d.get('dias_inclusos') or [1, 2, 3]), regra or 'bolo', valor_regra),
                   returning=True)
     for sid in (d.get('servicos') or []):
         execute("INSERT INTO plano_servicos (plano_id, servico_id) VALUES (%s,%s) ON CONFLICT DO NOTHING", (row['id'], sid))
@@ -632,13 +1079,19 @@ def plano_create():
 @role_required('dono')
 def plano_update(pid):
     d = request.get_json() or {}
+    regra, valor_regra, erro = valida_regra_assinante(d)
+    if erro:
+        return jsonify({'ok': False, 'error': erro}), 400
+    # comissao_assinante_valor só é sobrescrito quando a regra vem junto — senão um PUT parcial
+    # (só o nome, por exemplo) apagaria o R$ do plano 'fixo'.
     execute("""UPDATE planos SET nome=COALESCE(%s,nome), valor_mensal=COALESCE(%s,valor_mensal),
                limite_uso=%s, dias_inclusos=COALESCE(%s,dias_inclusos),
                comissao_assinante_regra=COALESCE(%s,comissao_assinante_regra),
-               comissao_assinante_valor=%s WHERE id=%s""",
+               comissao_assinante_valor=CASE WHEN %s THEN %s ELSE comissao_assinante_valor END
+               WHERE id=%s""",
             (d.get('nome'), d.get('valor_mensal'), d.get('limite_uso') or None,
              Json(d['dias_inclusos']) if d.get('dias_inclusos') is not None else None,
-             d.get('comissao_assinante_regra'), d.get('comissao_assinante_valor') or None, pid))
+             regra, regra is not None, valor_regra, pid))
     if d.get('servicos') is not None:
         execute("DELETE FROM plano_servicos WHERE plano_id=%s", (pid,))
         for sid in d['servicos']:
@@ -661,13 +1114,13 @@ def config_update():
                  slot_min=COALESCE(%s,slot_min), comissao_padrao=COALESCE(%s,comissao_padrao),
                  formas_pagamento=COALESCE(%s,formas_pagamento), horarios=COALESCE(%s,horarios),
                  categorias_despesa=COALESCE(%s,categorias_despesa),
-                 marca_nome=COALESCE(%s,marca_nome), marca_cor=COALESCE(%s,marca_cor), marca_logo_url=%s
+                 marca_nome=COALESCE(%s,marca_nome), marca_logo_url=%s
                WHERE id=1""",
             (d.get('slot_min'), d.get('comissao_padrao'),
              Json(d['formas_pagamento']) if d.get('formas_pagamento') is not None else None,
              Json(d['horarios']) if d.get('horarios') is not None else None,
              Json(d['categorias_despesa']) if d.get('categorias_despesa') is not None else None,
-             d.get('marca_nome'), d.get('marca_cor'), d.get('marca_logo_url')))
+             d.get('marca_nome'), d.get('marca_logo_url')))
     return jsonify({'ok': True})
 
 
@@ -1225,10 +1678,12 @@ def rel_assinantes_uso():
                      'status': status, 'barbeiros': barb, 'dia_vencimento': a['dia_vencimento']})
     rows.sort(key=lambda x: (-x['visitas'], x['cliente_nome'] or ''))
 
-    arrecad = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
-        WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
-    pool_pct = float(cfg().get('comissao_padrao') or 45)
-    bolo = arrecad * pool_pct / 100.0
+    # Custo de comissão dos assinantes: vem do MESMO motor do fechamento (o bolo dos planos 'bolo'
+    # + a comissão direta dos planos 'tabela'/'fixo'), senão a margem mentiria em quem não usa bolo.
+    c = calc_comissao(de, ate)
+    arrecad = c['plan_revenue']
+    bolo = round(c['pool'] + sum(r['assinante_direto'] for r in c['rows']), 2)
+    pool_pct = c['pool_pct']
     barb_agg = {}
     for v in visitas_periodo:
         nome = v['prof_nome'] or '—'
@@ -1395,20 +1850,36 @@ def caixa_fechamento():
                     'saldo': round(total_receita - total_despesa, 2), 'atendimentos': atendimentos})
 
 
-@app.route('/api/relatorios/comissao')
-@login_required
-def rel_comissao():
-    """Comissão por barbeiro no período:
-       - AVULSO: 45% (comissao_pct do barbeiro) sobre o valor dos serviços não cobertos.
-       - ASSINANTE (POOL): bolo = 45% (config.comissao_padrao) da arrecadação dos planos paga no
-         período, rateado entre os barbeiros pela fatia de atendimentos cobertos de cada um."""
-    de = parse_date(request.args.get('de'), date.today().replace(day=1))
-    ate = parse_date(request.args.get('ate'), date.today())
+def calc_comissao(de, ate, profissional_id=None):
+    """Motor único de comissão do período — usado pelo fechamento (dono) e pela tela do barbeiro.
 
+    AVULSO (serviço não coberto por plano): comissao_pct do barbeiro sobre o que o cliente pagou,
+    creditado a quem EXECUTOU o item (comanda_itens.profissional_id).
+
+    ASSINANTE: a regra é do PLANO (planos.comissao_assinante_regra), porque cada barbearia vende
+    o plano de um jeito. Um plano nunca cai em duas regras:
+      - 'bolo'   → % (config.comissao_padrao) da arrecadação DOS PLANOS 'bolo' no período, rateado
+                   entre os barbeiros pela produção. Atribuição por COMANDA (c.profissional_id),
+                   como sempre foi. A fatia de quem não recebe comissão (dona) fica com a casa.
+      - 'tabela' → comissao_pct do barbeiro sobre o PREÇO CHEIO do serviço coberto, direto pra quem
+                   executou. O assinante paga R$0, mas o barbeiro ganha como se fosse avulso.
+      - 'fixo'   → R$ comissao_assinante_valor por visita coberta, direto pra quem executou. Se dois
+                   barbeiros atendem a mesma visita, cada um conta a sua (é atendimento de cada um).
+      - 'zero'   → assinante não gera comissão.
+
+    Planos apagados/órfãos caem em 'bolo' (COALESCE) para não sumir do cálculo antigo.
+    """
     pool_pct = float(cfg().get('comissao_padrao') or 45)
+
+    # Arrecadação: total (p/ exibir) e a parcela que alimenta o bolo (só planos com regra 'bolo')
     plan_revenue = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
         WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, ate)) or 0
-    pool = plan_revenue * pool_pct / 100.0
+    pool_revenue = scalar("""SELECT COALESCE(SUM(m.valor),0) FROM movimentos m
+        LEFT JOIN assinaturas a ON a.id=m.ref_id
+        LEFT JOIN planos p ON p.id=a.plano_id
+        WHERE m.origem='assinatura' AND m.status='pago' AND m.data BETWEEN %s AND %s
+          AND COALESCE(p.comissao_assinante_regra,'bolo')='bolo'""", (de, ate)) or 0
+    pool = pool_revenue * pool_pct / 100.0
 
     avulso_rows = q_all("""
         SELECT ci.profissional_id, pr.nome AS prof_nome, pr.comissao_pct, pr.recebe_comissao,
@@ -1418,48 +1889,101 @@ def rel_comissao():
         WHERE ci.tipo='servico' AND ci.coberto_plano=false AND c.fechada_em::date BETWEEN %s AND %s
         GROUP BY ci.profissional_id, pr.nome, pr.comissao_pct, pr.recebe_comissao
     """, (de, ate))
-    # Produção = VISITAS de assinante (cada comanda com >=1 serviço coberto = 1 atendimento)
+
+    # Comissão DIRETA do assinante ('tabela' e 'fixo') — por executor do item
+    direto_rows = q_all("""
+        SELECT ci.profissional_id, pr.nome AS prof_nome, pr.comissao_pct, pr.recebe_comissao,
+               COALESCE(p.comissao_assinante_regra,'bolo') AS regra,
+               COALESCE(p.comissao_assinante_valor,0) AS valor_fixo,
+               COALESCE(SUM(ci.preco_tabela * ci.qtd),0) AS base_tabela,
+               COUNT(DISTINCT ci.comanda_id) AS visitas
+        FROM comanda_itens ci JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
+        LEFT JOIN profissionais pr ON pr.id=ci.profissional_id
+        LEFT JOIN assinaturas a ON a.id=ci.assinatura_id
+        LEFT JOIN planos p ON p.id=a.plano_id
+        WHERE ci.coberto_plano AND c.fechada_em::date BETWEEN %s AND %s
+          AND COALESCE(p.comissao_assinante_regra,'bolo') IN ('tabela','fixo')
+        GROUP BY ci.profissional_id, pr.nome, pr.comissao_pct, pr.recebe_comissao,
+                 p.comissao_assinante_regra, p.comissao_assinante_valor
+    """, (de, ate))
+
+    # Produção do BOLO = visitas cobertas por planos com regra 'bolo' (1 comanda = 1 atendimento)
     atend_rows = q_all("""
         SELECT c.profissional_id, pr.nome AS prof_nome, pr.recebe_comissao, COUNT(DISTINCT c.id) AS atend
         FROM comandas c
         LEFT JOIN profissionais pr ON pr.id=c.profissional_id
         WHERE c.status='fechada' AND c.fechada_em::date BETWEEN %s AND %s
-          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano=true)
+          AND EXISTS (SELECT 1 FROM comanda_itens ci
+                      LEFT JOIN assinaturas a ON a.id=ci.assinatura_id
+                      LEFT JOIN planos p ON p.id=a.plano_id
+                      WHERE ci.comanda_id=c.id AND ci.coberto_plano
+                        AND COALESCE(p.comissao_assinante_regra,'bolo')='bolo')
         GROUP BY c.profissional_id, pr.nome, pr.recebe_comissao
     """, (de, ate))
 
     # total_atend inclui TODOS (até a dona) → a fração dela não é distribuída (fica com a casa)
     total_atend = sum(r['atend'] for r in atend_rows) or 0
 
-    # já pagos (fechamentos) deste período exato
-    pagos = {r['profissional_id'] for r in q_all(
-        "SELECT profissional_id FROM comissoes_pagas WHERE periodo_de=%s AND periodo_ate=%s", (de, ate))}
+    pagos = {r['profissional_id']: r for r in q_all(
+        """SELECT profissional_id, valor, valor_calculado, ajuste_motivo FROM comissoes_pagas
+           WHERE periodo_de=%s AND periodo_ate=%s""", (de, ate))}
+
+    def slot(pid, nome):
+        return barb.setdefault(pid, {'id': pid, 'profissional': nome, 'avulso': 0.0,
+                                     'assinante_direto': 0.0, 'atend': 0})
 
     barb = {}  # só quem RECEBE comissão entra no resultado
     for r in avulso_rows:
         if r['profissional_id'] is None or not r['recebe_comissao']:
             continue
-        b = barb.setdefault(r['profissional_id'], {'id': r['profissional_id'], 'profissional': r['prof_nome'], 'avulso': 0.0, 'atend': 0})
-        b['avulso'] = float(r['base']) * float(r['comissao_pct'] or 0) / 100.0
+        slot(r['profissional_id'], r['prof_nome'])['avulso'] = \
+            float(r['base']) * float(r['comissao_pct'] or 0) / 100.0
+    for r in direto_rows:
+        if r['profissional_id'] is None or not r['recebe_comissao']:
+            continue
+        b = slot(r['profissional_id'], r['prof_nome'])
+        if r['regra'] == 'tabela':
+            b['assinante_direto'] += float(r['base_tabela']) * float(r['comissao_pct'] or 0) / 100.0
+        else:                                    # 'fixo': R$ por visita coberta
+            b['assinante_direto'] += float(r['valor_fixo']) * int(r['visitas'])
     for r in atend_rows:
         if r['profissional_id'] is None or not r['recebe_comissao']:
             continue
-        b = barb.setdefault(r['profissional_id'], {'id': r['profissional_id'], 'profissional': r['prof_nome'], 'avulso': 0.0, 'atend': 0})
-        b['atend'] = r['atend']
+        slot(r['profissional_id'], r['prof_nome'])['atend'] = r['atend']
 
     rows = []
     for b in barb.values():
         share = (b['atend'] / total_atend) if total_atend else 0
         pool_share = pool * share
-        rows.append({'profissional_id': b['id'], 'profissional': b['profissional'], 'avulso': round(b['avulso'], 2),
+        total = b['avulso'] + b['assinante_direto'] + pool_share
+        fechado = pagos.get(b['id'])
+        rows.append({'profissional_id': b['id'], 'profissional': b['profissional'],
+                     'avulso': round(b['avulso'], 2), 'assinante_direto': round(b['assinante_direto'], 2),
                      'atend': b['atend'], 'participacao_pct': round(share * 100, 1),
-                     'pool_share': round(pool_share, 2), 'total': round(b['avulso'] + pool_share, 2),
-                     'pago': b['id'] in pagos})
+                     'pool_share': round(pool_share, 2), 'total': round(total, 2),
+                     'pago': fechado is not None,
+                     'valor_pago': fechado['valor'] if fechado else None,
+                     'ajuste_motivo': fechado.get('ajuste_motivo') if fechado else None})
     rows.sort(key=lambda x: x['total'], reverse=True)
-    return jsonify({'ok': True, 'de': de.isoformat(), 'ate': ate.isoformat(),
-                    'plan_revenue': round(plan_revenue, 2), 'pool': round(pool, 2),
-                    'pool_pct': pool_pct, 'total_atend': total_atend, 'rows': rows,
-                    'total': round(sum(r['total'] for r in rows), 2)})
+    if profissional_id is not None:
+        rows = [r for r in rows if r['profissional_id'] == profissional_id]
+
+    distribuido = sum(r['pool_share'] for r in rows)
+    return {'de': de.isoformat(), 'ate': ate.isoformat(),
+            'plan_revenue': round(plan_revenue, 2), 'pool_revenue': round(pool_revenue, 2),
+            'pool': round(pool, 2), 'pool_distribuido': round(distribuido, 2),
+            'pool_retido': round(pool - distribuido, 2), 'pool_pct': pool_pct,
+            'total_atend': total_atend, 'rows': rows,
+            'total': round(sum(r['total'] for r in rows), 2)}
+
+
+@app.route('/api/relatorios/comissao')
+@login_required
+def rel_comissao():
+    """Comissão por barbeiro no período (avulso + regra do plano do assinante). Ver calc_comissao."""
+    de = parse_date(request.args.get('de'), date.today().replace(day=1))
+    ate = parse_date(request.args.get('ate'), date.today())
+    return jsonify({'ok': True, **calc_comissao(de, ate)})
 
 
 @app.route('/api/relatorios/minha-comissao')
@@ -1476,31 +2000,13 @@ def rel_minha_comissao():
     hoje = date.today()
     de = hoje.replace(day=1) if hoje.day <= 15 else hoje.replace(day=16)
 
-    pct = float(scalar("SELECT comissao_pct FROM profissionais WHERE id=%s", (pid,)) or 0)
-    avulso_base = scalar("""SELECT COALESCE(SUM(ci.subtotal),0) FROM comanda_itens ci
-        JOIN comandas c ON c.id=ci.comanda_id AND c.status='fechada'
-        WHERE ci.tipo='servico' AND ci.coberto_plano=false AND ci.profissional_id=%s
-          AND c.fechada_em::date BETWEEN %s AND %s""", (pid, de, hoje)) or 0
-    avulso = avulso_base * pct / 100.0
-
-    pool_pct = float(cfg().get('comissao_padrao') or 45)
-    plan_revenue = scalar("""SELECT COALESCE(SUM(valor),0) FROM movimentos
-        WHERE origem='assinatura' AND status='pago' AND data BETWEEN %s AND %s""", (de, hoje)) or 0
-    pool = plan_revenue * pool_pct / 100.0
-    # Produção por VISITA (comanda com >=1 serviço coberto)
-    meu_atend = scalar("""SELECT COUNT(DISTINCT c.id) FROM comandas c
-        WHERE c.status='fechada' AND c.profissional_id=%s AND c.fechada_em::date BETWEEN %s AND %s
-          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano=true)""",
-        (pid, de, hoje)) or 0
-    total_atend = scalar("""SELECT COUNT(DISTINCT c.id) FROM comandas c
-        WHERE c.status='fechada' AND c.fechada_em::date BETWEEN %s AND %s
-          AND EXISTS (SELECT 1 FROM comanda_itens ci WHERE ci.comanda_id=c.id AND ci.coberto_plano=true)""",
-        (de, hoje)) or 0
-    pool_share = pool * (meu_atend / total_atend) if total_atend else 0
-
-    return jsonify({'ok': True, 'comissao': round(avulso + pool_share, 2),
-                    'avulso': round(avulso, 2), 'pool_share': round(pool_share, 2),
-                    'atendimentos': meu_atend, 'periodo': f"{de.isoformat()} a {hoje.isoformat()}"})
+    # Mesmo motor do fechamento do dono — o barbeiro vê exatamente o que vai receber.
+    r = calc_comissao(de, hoje, profissional_id=pid)
+    linha = r['rows'][0] if r['rows'] else {'avulso': 0, 'assinante_direto': 0, 'pool_share': 0,
+                                            'total': 0, 'atend': 0}
+    return jsonify({'ok': True, 'comissao': linha['total'], 'avulso': linha['avulso'],
+                    'assinante_direto': linha['assinante_direto'], 'pool_share': linha['pool_share'],
+                    'atendimentos': linha['atend'], 'periodo': f"{de.isoformat()} a {hoje.isoformat()}"})
 
 
 @app.route('/api/comissoes/fechar', methods=['POST'])
@@ -1519,14 +2025,28 @@ def comissao_fechar():
         return jsonify({'ok': False, 'error': 'Dados incompletos'}), 400
     if scalar("SELECT COUNT(*) FROM comissoes_pagas WHERE profissional_id=%s AND periodo_de=%s AND periodo_ate=%s", (pid, de, ate)):
         return jsonify({'ok': False, 'error': 'Comissão deste período já foi fechada'}), 409
+
+    # O calculado vem do motor, NUNCA do front — senão o "ajuste" não teria contra o que ser medido.
+    calc = calc_comissao(de, ate, profissional_id=pid)
+    calculado = calc['rows'][0]['total'] if calc['rows'] else 0.0
+    motivo = (d.get('ajuste_motivo') or '').strip() or None
+    if abs(valor - calculado) >= 0.01 and not motivo:
+        return jsonify({'ok': False, 'error': f'Valor difere do calculado ({calculado:.2f}). '
+                                              'Escreva o motivo do ajuste.'}), 400
+
     prof = q_one("SELECT nome FROM profissionais WHERE id=%s", (pid,))
     nome = prof['nome'] if prof else f"barbeiro {pid}"
+    desc = f"Comissão {nome} ({de.strftime('%d/%m')}–{ate.strftime('%d/%m')})"
+    if motivo:
+        desc += " · ajustada"
     mov = execute("""INSERT INTO movimentos (tipo, origem, descricao, categoria, valor, data, status, criado_por)
                      VALUES ('despesa','manual',%s,'Comissões',%s,CURRENT_DATE,'pago',%s) RETURNING id""",
-                  (f"Comissão {nome} ({de.strftime('%d/%m')}–{ate.strftime('%d/%m')})", valor, session['user_id']), returning=True)
-    execute("""INSERT INTO comissoes_pagas (profissional_id, periodo_de, periodo_ate, valor, movimento_id, criado_por)
-               VALUES (%s,%s,%s,%s,%s,%s)""", (pid, de, ate, valor, mov['id'], session['user_id']))
-    return jsonify({'ok': True})
+                  (desc, valor, session['user_id']), returning=True)
+    execute("""INSERT INTO comissoes_pagas (profissional_id, periodo_de, periodo_ate, valor,
+                   valor_calculado, ajuste_motivo, movimento_id, criado_por)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (pid, de, ate, valor, calculado, motivo, mov['id'], session['user_id']))
+    return jsonify({'ok': True, 'valor_calculado': round(calculado, 2), 'ajustado': bool(motivo)})
 
 
 def _dre_totais(de, ate):

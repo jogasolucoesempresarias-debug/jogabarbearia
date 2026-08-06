@@ -21,6 +21,25 @@ def status(method, path):
     except urllib.error.HTTPError as e:
         return e.code
 
+
+class _SemRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib SEGUE redirect por padrão — sem isto o teste de página bloqueada veria o 200 da
+    agenda de destino e acusaria falha achando que o barbeiro entrou no financeiro."""
+    def redirect_request(self, *a, **k):
+        return None
+
+
+op_sem_redirect = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj), _SemRedirect)
+
+
+def status_bruto(path):
+    """Status REAL da resposta (sem seguir o redirect) + pra onde ela manda."""
+    try:
+        r = op_sem_redirect.open(urllib.request.Request(BASE + path, method='GET'), timeout=10)
+        return r.status, None
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get('Location')
+
 def db():
     return psycopg2.connect(host=os.getenv('DB_HOST'), port=os.getenv('DB_PORT'), dbname=os.getenv('DB_NAME'),
         user=os.getenv('DB_USER'), password=os.getenv('DB_PASSWORD'))
@@ -46,8 +65,8 @@ for p in ['/api/caixa/fechamento', '/api/despesas/resumo', f'/api/relatorios/com
 
 print("== Páginas financeiras → redirect (302) pra agenda ==")
 for p in ['/caixa', '/despesas', '/dre', '/relatorios', '/config', '/comanda']:
-    st = status('GET', p)
-    check(f'{p} redireciona', st in (302, 301), st)
+    st, para = status_bruto(p)
+    check(f'{p} redireciona', st in (302, 301) and para == '/', f"{st} → {para}")
 
 print("== Páginas próprias do barbeiro (200) ==")
 for p in ['/', '/barbeiro']:

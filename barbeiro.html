@@ -34,7 +34,10 @@
     const j = await api('/api/relatorios/minha-comissao');
     document.getElementById('comissao').textContent = money(j.comissao);
     document.getElementById('atend').textContent = j.atendimentos;
-    document.getElementById('breakdown').textContent = `avulso ${money(j.avulso||0)} + bolo ${money(j.pool_share||0)}`;
+    const partes = [`avulso ${money(j.avulso||0)}`];
+    if (j.assinante_direto > 0) partes.push(`assinante ${money(j.assinante_direto)}`);
+    if (j.pool_share > 0) partes.push(`bolo ${money(j.pool_share)}`);
+    document.getElementById('breakdown').textContent = partes.join(' + ');
     document.getElementById('periodo').textContent = j.periodo ? ('período ' + j.periodo.split(' a ').map(fmtData).join(' a ')) : '';
   } catch (e) { toast(e.message, 'err'); }
 })();

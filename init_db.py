@@ -15,6 +15,28 @@ conn = psycopg2.connect(
 )
 cur = conn.cursor()
 
+# ── Controle de migrações de DADO (one-shot) ──────────────────────────
+# As migrações de SCHEMA são idempotentes por natureza (IF NOT EXISTS). As de DADO não:
+# rodar duas vezes desfaria escolha do cliente. Este marcador garante "só uma vez".
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS _migracoes (
+        nome       VARCHAR(80) PRIMARY KEY,
+        aplicada_em TIMESTAMP DEFAULT NOW()
+    );
+""")
+
+
+def uma_vez(nome, sql, params=None):
+    """Roda uma migração de dado só na primeira vez que o init_db passar por aqui."""
+    cur.execute("SELECT 1 FROM _migracoes WHERE nome = %s", (nome,))
+    if cur.fetchone():
+        return False
+    cur.execute(sql, params or ())
+    cur.execute("INSERT INTO _migracoes (nome) VALUES (%s)", (nome,))
+    print(f"[migração] {nome} aplicada.")
+    return True
+
+
 # ── Profissionais (barbeiros) ─────────────────────────────────────────
 cur.execute("""
     CREATE TABLE IF NOT EXISTS profissionais (
@@ -95,12 +117,25 @@ cur.execute("""
         valor_mensal             NUMERIC(10,2) NOT NULL DEFAULT 0,
         limite_uso               INTEGER,         -- NULL = ilimitado
         dias_inclusos            JSONB DEFAULT '[1,2,3]'::jsonb,   -- 0=dom..6=sab
-        comissao_assinante_regra VARCHAR(10) DEFAULT 'tabela'
-                                 CHECK (comissao_assinante_regra IN ('tabela', 'fixo', 'zero')),
+        comissao_assinante_regra VARCHAR(10) DEFAULT 'bolo'
+                                 CHECK (comissao_assinante_regra IN ('bolo', 'tabela', 'fixo', 'zero')),
         comissao_assinante_valor NUMERIC(10,2),
         ativo                    BOOLEAN DEFAULT true
     );
 """)
+# Regra de comissão do assinante, por plano (antes era só o bolo, no código):
+#   bolo   → % da arrecadação DESTE plano rateada entre os barbeiros pela produção (comportamento antigo)
+#   tabela → % do barbeiro sobre o preço cheio do serviço coberto, direto pra quem executou
+#   fixo   → R$ fixo (comissao_assinante_valor) por visita coberta, direto pra quem executou
+#   zero   → assinante não gera comissão
+cur.execute("ALTER TABLE planos ALTER COLUMN comissao_assinante_regra SET DEFAULT 'bolo';")
+cur.execute("ALTER TABLE planos DROP CONSTRAINT IF EXISTS planos_comissao_assinante_regra_check;")
+cur.execute("""ALTER TABLE planos ADD CONSTRAINT planos_comissao_assinante_regra_check
+    CHECK (comissao_assinante_regra IN ('bolo', 'tabela', 'fixo', 'zero'));""")
+# Planos que já existiam foram gravados como 'tabela' (default antigo) mas o cálculo SEMPRE os
+# tratou como bolo — a coluna nunca era lida. Migra o rótulo pra verdade, sem mudar valor nenhum.
+uma_vez('planos_regra_tabela_para_bolo',
+        "UPDATE planos SET comissao_assinante_regra='bolo' WHERE comissao_assinante_regra='tabela'")
 
 # Serviços inclusos no plano (m2m)
 cur.execute("""
@@ -251,7 +286,7 @@ cur.execute("""
         cancelamento_taxa NUMERIC(10,2),
         marca_nome        VARCHAR(120) DEFAULT 'JOGA Barbearia',
         marca_logo_url    VARCHAR(255),
-        marca_cor         VARCHAR(9) DEFAULT '#38bdf8',
+        marca_cor         VARCHAR(9) DEFAULT '#38bdf8',   -- NÃO USADA: o tema do app é fixo (app.css)
         CONSTRAINT config_single_row CHECK (id = 1)
     );
 """)
@@ -275,6 +310,45 @@ cur.execute("""
     );
 """)
 cur.execute("CREATE INDEX IF NOT EXISTS ix_comissoes_prof ON comissoes_pagas(profissional_id, periodo_de, periodo_ate);")
+# Override manual no fechamento: guarda o que o sistema calculou, o que foi pago e o porquê.
+# Sem isso o ajuste some do histórico e ninguém consegue auditar a diferença depois.
+cur.execute("ALTER TABLE comissoes_pagas ADD COLUMN IF NOT EXISTS valor_calculado NUMERIC(10,2);")
+cur.execute("ALTER TABLE comissoes_pagas ADD COLUMN IF NOT EXISTS ajuste_motivo TEXT;")
+# Fechamentos antigos não tinham ajuste: o pago É o calculado.
+uma_vez('comissoes_valor_calculado_backfill',
+        "UPDATE comissoes_pagas SET valor_calculado = valor WHERE valor_calculado IS NULL")
+
+# ── Fichas de coleta / entrega da instância (onboarding assistido pela JOGA) ──
+# A barbearia preenche o que só ela sabe (preços, barbeiros, horários) numa página pública;
+# a JOGA revisa e APLICA, e a instância nasce populada.
+#
+# Numa instância de barbearia existe UMA ficha (a id=1, criada aqui). Numa instância rodando com
+# MODO_COLETA=1 (o hub que coleta de vários prospects antes de existir servidor pra eles) existem
+# VÁRIAS, uma por prospect — daí a tabela não ser mais de linha única.
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS setup_coleta (
+        id           INTEGER PRIMARY KEY DEFAULT 1,
+        dados        JSONB NOT NULL DEFAULT '{}'::jsonb,
+        status       VARCHAR(12) NOT NULL DEFAULT 'vazia'
+                     CHECK (status IN ('vazia', 'rascunho', 'enviada', 'aplicada')),
+        token        VARCHAR(40),
+        enviada_em   TIMESTAMP,
+        aplicada_em  TIMESTAMP,
+        atualizada_em TIMESTAMP DEFAULT NOW()
+    );
+""")
+# Multi-ficha (aditivo): tira a trava de linha única e dá sequence ao id.
+cur.execute("ALTER TABLE setup_coleta DROP CONSTRAINT IF EXISTS setup_coleta_single_row;")
+cur.execute("ALTER TABLE setup_coleta ADD COLUMN IF NOT EXISTS nome VARCHAR(120);")
+cur.execute("ALTER TABLE setup_coleta ADD COLUMN IF NOT EXISTS criada_em TIMESTAMP DEFAULT NOW();")
+cur.execute("CREATE SEQUENCE IF NOT EXISTS setup_coleta_id_seq OWNED BY setup_coleta.id;")
+cur.execute("ALTER TABLE setup_coleta ALTER COLUMN id SET DEFAULT nextval('setup_coleta_id_seq');")
+cur.execute("SELECT setval('setup_coleta_id_seq', GREATEST(1, COALESCE((SELECT MAX(id) FROM setup_coleta), 1)));")
+# Token é a chave do link público: não pode repetir entre fichas.
+cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS ix_setup_coleta_token
+               ON setup_coleta(token) WHERE token IS NOT NULL;""")
+# A ficha da própria instância (a que o /setup usa pra aplicar) é sempre a id=1.
+cur.execute("INSERT INTO setup_coleta (id) VALUES (1) ON CONFLICT (id) DO NOTHING;")
 
 conn.commit()
 cur.close()

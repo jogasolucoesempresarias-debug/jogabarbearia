@@ -4,5 +4,5 @@ __pycache__/
 .env
 *.log
 .pytest_cache/
-_srv.out
-_srv.err
+_srv*.out
+_srv*.err

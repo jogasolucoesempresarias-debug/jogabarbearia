@@ -67,6 +67,13 @@ async function renderShell(active) {
   try { ME = (await api('/api/me')); } catch (e) { return; }
   const role = ME.role;
 
+  // Hub de coleta: não existe barbearia aqui, então agenda/caixa/DRE não fazem sentido.
+  // Sem isto o hub parece um sistema quebrado (telas vazias) em vez de uma ferramenta interna.
+  if (ME.modo_coleta) {
+    montarBottomNav(active, [{ href: '/setup', ic: '📋', label: 'Fichas' }], []);
+    return;
+  }
+
   // Barbeiro tem navegação enxuta
   if (role === 'barbeiro') {
     montarBottomNav(active, [

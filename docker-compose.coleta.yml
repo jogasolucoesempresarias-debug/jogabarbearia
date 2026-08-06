@@ -1,0 +1,54 @@
+# Hub de coleta da JOGA — coletabarbearia.jogasolucoes.com.br
+#
+# MESMA imagem das barbearias (uma branch, uma imagem). O que muda é só env var:
+#   MODO_COLETA=1  → a instância vira hub: guarda N fichas (uma por prospect) e NUNCA vira barbearia
+#                    (o "aplicar" fica bloqueado nela).
+#
+# Serve pra você mandar a ficha ainda na negociação, sem abrir instância pra quem não fechou.
+# Fechou → cria a instância do cliente, copia a ficha aqui e cola no /setup de lá.
+#
+# ATENÇÃO ao clonar esta stack para uma barbearia nova: os nomes dos routers/services do Traefik
+# (aqui `coleta`) precisam ser ÚNICOS por stack, senão o Traefik embaralha as rotas.
+
+version: '3.8'
+
+services:
+  coleta-app:
+    image: ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:latest
+    networks:
+      - proxy
+      - coleta-internal
+    environment:
+      TZ: America/Sao_Paulo
+      SECRET_KEY: ${SECRET_KEY}          # PRÓPRIA — não repita a de nenhuma barbearia
+      DB_HOST: postgres_postgres
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-joga_coleta}   # banco só do hub
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      MODO_COLETA: "1"
+      SUPORTE_EMAIL: ${SUPORTE_EMAIL}    # o hub não tem usuário de cliente: entra pelo master
+      SUPORTE_SENHA: ${SUPORTE_SENHA}
+      # Aviso no WhatsApp quando um prospect envia a ficha
+      ALERTAS_ATIVO: "1"
+      UAZAPI_URL: ${UAZAPI_URL:-https://free.uazapi.com}
+      UAZAPI_TOKEN: ${UAZAPI_TOKEN}
+      ALERTA_WHATSAPP: ${ALERTA_WHATSAPP:-34999434613,28999850221}
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=proxy"
+        - "traefik.http.routers.coleta.rule=Host(`coletabarbearia.jogasolucoes.com.br`)"
+        - "traefik.http.routers.coleta.entrypoints=websecure"
+        - "traefik.http.routers.coleta.tls.certresolver=le"
+        - "traefik.http.services.coleta.loadbalancer.server.port=5000"
+
+networks:
+  proxy:
+    external: true
+  coleta-internal:
+    driver: overlay

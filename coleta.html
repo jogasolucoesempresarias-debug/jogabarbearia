@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Ficha da barbearia</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2338bdf8'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-size='18' font-weight='700' text-anchor='middle' fill='%230a0e17'%3EB%3C/text%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0a0e17;--surface:#111827;--surface2:#1a2235;--border:#1e293b;--text:#e2e8f0;--text-dim:#94a3b8;--accent:#38bdf8;--accent2:#818cf8;--red:#f87171;--green:#34d399; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); padding:16px 14px 90px; max-width:600px; margin:0 auto; }
+  header { text-align:center; padding:14px 0 6px; }
+  .logo { width:52px; height:52px; border-radius:14px; background:linear-gradient(135deg,var(--accent),var(--accent2)); display:flex; align-items:center; justify-content:center; font-size:1.6rem; font-weight:700; color:var(--bg); margin:0 auto 12px; }
+  h1 { font-size:1.25rem; font-weight:700; }
+  .subtitle { color:var(--text-dim); font-size:0.85rem; margin:6px 0 2px; line-height:1.45; }
+  .tempo { display:inline-block; margin-top:10px; font-size:0.72rem; color:var(--accent); background:rgba(56,189,248,0.1); border:1px solid rgba(56,189,248,0.25); padding:5px 11px; border-radius:99px; font-weight:600; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:18px 16px; margin-top:14px; }
+  .card > h2 { font-size:0.95rem; font-weight:700; display:flex; align-items:center; gap:9px; margin-bottom:4px; }
+  .num { width:24px; height:24px; flex:none; border-radius:8px; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:0.75rem; color:var(--accent); font-weight:700; }
+  .card > p.ajuda { color:var(--text-dim); font-size:0.78rem; margin:6px 0 14px; line-height:1.5; }
+
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:0.7rem; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em; font-weight:600; }
+  input, select { width:100%; padding:12px 13px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; color:var(--text); font-family:inherit; font-size:16px; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  input[type=checkbox] { width:auto; }
+  .linha { display:flex; gap:8px; align-items:flex-end; }
+  .linha .field { flex:1; margin-bottom:0; }
+  .w-preco { max-width:104px; } .w-dur { max-width:96px; } .w-pct { max-width:86px; }
+
+  .item { border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:10px; background:var(--surface2); }
+  .item.off { opacity:0.42; }
+  .item-topo { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .item-topo .nome { flex:1; font-weight:600; font-size:0.92rem; }
+  .marcar { display:flex; align-items:center; gap:8px; font-size:0.85rem; cursor:pointer; user-select:none; }
+  .rm { background:none; border:none; color:var(--red); font-size:1.15rem; cursor:pointer; padding:0 4px; line-height:1; }
+
+  .btn { width:100%; padding:14px; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:var(--bg); font-weight:700; border:none; border-radius:11px; cursor:pointer; font-size:0.95rem; font-family:inherit; }
+  .btn:disabled { opacity:0.55; }
+  .btn-ghost { background:none; border:1px dashed var(--border); color:var(--text-dim); padding:11px; font-weight:600; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { padding:9px 14px; border-radius:99px; border:1px solid var(--border); background:var(--surface2); color:var(--text-dim); font-size:0.85rem; cursor:pointer; font-family:inherit; }
+  .chip.on { border-color:var(--accent); color:var(--accent); background:rgba(56,189,248,0.08); }
+  .sim-nao { display:flex; gap:8px; margin-bottom:12px; }
+  .sim-nao button { flex:1; padding:12px; border-radius:10px; border:1px solid var(--border); background:var(--surface2); color:var(--text-dim); font-family:inherit; font-size:0.9rem; font-weight:600; cursor:pointer; }
+  .sim-nao button.on { border-color:var(--accent); color:var(--accent); background:rgba(56,189,248,0.08); }
+
+  .dia { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .dia .nm { width:38px; font-weight:700; font-size:0.82rem; flex:none; }
+  .dia input[type=time] { flex:1; padding:10px; font-size:15px; }
+  .dia .fechado { font-size:0.76rem; color:var(--text-dim); display:flex; align-items:center; gap:6px; flex:none; cursor:pointer; }
+
+  .regra-opt { display:flex; gap:10px; align-items:flex-start; padding:11px; border:1px solid var(--border); border-radius:10px; margin-bottom:8px; cursor:pointer; background:var(--surface); }
+  .regra-opt.on { border-color:var(--accent); background:rgba(56,189,248,0.06); }
+  .regra-opt input { margin-top:3px; }
+  .regra-opt .txt b { display:block; font-size:0.87rem; font-weight:600; margin-bottom:2px; }
+  .regra-opt .txt span { font-size:0.75rem; color:var(--text-dim); line-height:1.4; }
+
+  .barra { position:fixed; left:0; right:0; bottom:0; background:rgba(10,14,23,0.96); border-top:1px solid var(--border); padding:12px 14px; backdrop-filter:blur(8px); }
+  .barra .dentro { max-width:600px; margin:0 auto; display:flex; align-items:center; gap:12px; }
+  .salvo { font-size:0.72rem; color:var(--text-dim); flex:none; min-width:74px; }
+  .salvo.ok { color:var(--green); }
+  .footer { text-align:center; margin-top:18px; color:var(--text-dim); font-size:0.68rem; font-family:'JetBrains Mono',monospace; }
+  .fim { text-align:center; padding:50px 20px; }
+  .fim .check { font-size:3.2rem; margin-bottom:12px; }
+  .fim h2 { font-size:1.2rem; margin-bottom:10px; }
+  .fim p { color:var(--text-dim); font-size:0.92rem; line-height:1.6; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">B</div>
+    <h1>Ficha da sua barbearia</h1>
+    <p class="subtitle">Preencha o que só você sabe — preços, equipe e horário.<br>O resto a gente já deixou pronto.</p>
+    <span class="tempo">⏱ leva uns 5 minutos · salva sozinho</span>
+  </header>
+  <div id="corpo"></div>
+  <div class="footer">JOGA Soluções Empresariais</div>
+</div>
+
+<div class="fim" id="fim" style="display:none">
+  <div class="check">✅</div>
+  <h2>Ficha enviada!</h2>
+  <p>Recebemos tudo. Vamos deixar o sistema configurado com esses dados<br>e te mostrar funcionando no treinamento. 💈</p>
+</div>
+
+<div class="barra" id="barra">
+  <div class="dentro">
+    <span class="salvo" id="salvo">—</span>
+    <button class="btn" id="b-enviar" onclick="enviar()">Enviar pra JOGA</button>
+  </div>
+</div>
+
+<script>
+const T = new URLSearchParams(location.search).get('t') || '';
+const DIAS = ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'];
+const DIAS_CURTO = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+let D = null;
+
+const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = v => { const n = parseFloat(String(v).replace(',','.')); return isNaN(n) ? 0 : n; };
+
+// ── Salvamento automático (o barbeiro é interrompido; a ficha não pode se perder) ──
+let timer = null, salvando = false;
+function marcarSujo() {
+  document.getElementById('salvo').textContent = 'salvando…';
+  document.getElementById('salvo').classList.remove('ok');
+  clearTimeout(timer);
+  timer = setTimeout(salvar, 800);
+}
+async function salvar(enviar = false) {
+  if (salvando) return;
+  salvando = true;
+  try {
+    const r = await fetch('/api/coleta', { method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ t: T, dados: D, enviar }) });
+    const j = await r.json();
+    const el = document.getElementById('salvo');
+    if (j.ok) { el.textContent = '✓ salvo'; el.classList.add('ok'); }
+    else { el.textContent = 'erro ao salvar'; }
+    return j.ok;
+  } catch { document.getElementById('salvo').textContent = 'sem conexão'; return false; }
+  finally { salvando = false; }
+}
+
+// ── Render ────────────────────────────────────────────────────────────
+function render() {
+  const c = document.getElementById('corpo');
+  c.innerHTML = secBarbearia() + secEquipe() + secServicos() + secHorario() + secProdutos() + secPlanos() + secPagamento();
+}
+
+function secBarbearia() {
+  const b = D.barbearia || {};
+  return `<div class="card">
+    <h2><span class="num">1</span> A barbearia</h2>
+    <p class="ajuda">O nome é o que vai aparecer no sistema e no cartaz de cadastro dos clientes.</p>
+    <div class="field"><label>Nome da barbearia</label><input value="${esc(b.nome)}" oninput="setCampo('barbearia','nome',this.value)" placeholder="Ex.: Barbearia do Zé"></div>
+    <div class="field"><label>Endereço (opcional)</label><input value="${esc(b.endereco)}" oninput="setCampo('barbearia','endereco',this.value)" placeholder="Rua, número, bairro"></div>
+    <div class="field" style="margin-bottom:0"><label>WhatsApp de contato</label><input value="${esc(b.whatsapp)}" inputmode="numeric" oninput="this.value=maskTel(this.value); setCampo('barbearia','whatsapp',this.value)" placeholder="(34) 99999-9999"></div>
+  </div>`;
+}
+
+function secEquipe() {
+  return `<div class="card">
+    <h2><span class="num">2</span> Quem trabalha aqui</h2>
+    <p class="ajuda">Um por barbeiro, incluindo você. Marque quem é o dono: o dono não tira comissão do próprio trabalho — esse valor fica na casa.</p>
+    ${(D.barbeiros||[]).map((b,i)=>`<div class="item">
+      <div class="item-topo">
+        <div class="field" style="flex:1;margin:0"><label>Nome</label><input value="${esc(b.nome)}" oninput="setLista('barbeiros',${i},'nome',this.value)" placeholder="Nome do barbeiro"></div>
+        ${(D.barbeiros.length>1)?`<button class="rm" onclick="rmLista('barbeiros',${i})" title="remover">✕</button>`:''}
+      </div>
+      <div class="linha" style="margin-bottom:10px">
+        <div class="field w-pct"><label>Comissão</label><input type="number" inputmode="decimal" value="${b.comissao_pct??45}" oninput="setLista('barbeiros',${i},'comissao_pct',+this.value)"></div>
+        <div style="flex:1;font-size:0.74rem;color:var(--text-dim);padding-bottom:12px">% que ele ganha de cada serviço que faz</div>
+      </div>
+      <label class="marcar" style="margin-bottom:7px"><input type="checkbox" ${b.dono?'checked':''} onchange="setLista('barbeiros',${i},'dono',this.checked)"> É o dono da barbearia</label>
+      <label class="marcar"><input type="checkbox" ${b.login?'checked':''} onchange="setLista('barbeiros',${i},'login',this.checked)"> Vai usar o sistema (criamos o acesso dele)</label>
+    </div>`).join('')}
+    <button class="btn btn-ghost" onclick="addLista('barbeiros',{nome:'',dono:false,comissao_pct:45,login:true})">+ Adicionar barbeiro</button>
+  </div>`;
+}
+
+function secServicos() {
+  return `<div class="card">
+    <h2><span class="num">3</span> Serviços e preços</h2>
+    <p class="ajuda">A parte mais importante. Desmarque o que você não faz, corrija os preços e o tempo de cada um — é o tempo que monta a sua agenda.</p>
+    ${(D.servicos||[]).map((s,i)=>`<div class="item ${s.usa?'':'off'}">
+      <div class="item-topo">
+        <label class="marcar" style="flex:1"><input type="checkbox" ${s.usa?'checked':''} onchange="setLista('servicos',${i},'usa',this.checked)"> <span class="nome">${esc(s.nome)||'(sem nome)'}</span></label>
+        <button class="rm" onclick="rmLista('servicos',${i})" title="remover">✕</button>
+      </div>
+      <div class="linha">
+        <div class="field"><label>Nome</label><input value="${esc(s.nome)}" oninput="setLista('servicos',${i},'nome',this.value)"></div>
+        <div class="field w-preco"><label>Preço R$</label><input type="number" inputmode="decimal" value="${s.preco??0}" oninput="setLista('servicos',${i},'preco',num(this.value))"></div>
+        <div class="field w-dur"><label>Minutos</label>
+          <select onchange="setLista('servicos',${i},'duracao_min',+this.value)">
+            ${[15,30,45,60,90].map(m=>`<option value="${m}" ${(+s.duracao_min===m)?'selected':''}>${m}</option>`).join('')}
+          </select></div>
+      </div>
+    </div>`).join('')}
+    <button class="btn btn-ghost" onclick="addLista('servicos',{nome:'',preco:0,duracao_min:30,usa:true})">+ Adicionar serviço</button>
+  </div>`;
+}
+
+function secHorario() {
+  const h = D.horarios || {};
+  return `<div class="card">
+    <h2><span class="num">4</span> Horário de funcionamento</h2>
+    <p class="ajuda">Já deixamos o horário mais comum. Ajuste o que for diferente e marque os dias em que fecha.</p>
+    ${DIAS.map((nome,i)=>{ const d = h[String(i)];
+      return `<div class="dia">
+        <span class="nm">${DIAS_CURTO[i]}</span>
+        ${d ? `<input type="time" value="${d.abre||''}" onchange="setHora(${i},'abre',this.value)">
+               <input type="time" value="${d.fecha||''}" onchange="setHora(${i},'fecha',this.value)">`
+            : `<span style="flex:1;color:var(--text-dim);font-size:0.84rem">fechado</span>`}
+        <label class="fechado"><input type="checkbox" ${d?'':'checked'} onchange="fechaDia(${i},this.checked)"> fecha</label>
+      </div>`; }).join('')}
+    <button class="btn btn-ghost" style="margin-top:6px" onclick="copiarHorario()">Repetir o horário de segunda nos outros dias</button>
+  </div>`;
+}
+
+function secProdutos() {
+  return `<div class="card">
+    <h2><span class="num">5</span> Produtos para venda</h2>
+    <p class="ajuda">Pomada, shampoo, minoxidil… Se você não vende nada disso, é só dizer que não.</p>
+    <div class="sim-nao">
+      <button class="${D.vende_produto?'on':''}" onclick="setRaiz('vende_produto',true)">Vendo produtos</button>
+      <button class="${D.vende_produto?'':'on'}" onclick="setRaiz('vende_produto',false)">Não vendo</button>
+    </div>
+    ${D.vende_produto ? (D.produtos||[]).map((p,i)=>`<div class="item ${p.usa?'':'off'}">
+      <div class="item-topo">
+        <label class="marcar" style="flex:1"><input type="checkbox" ${p.usa?'checked':''} onchange="setLista('produtos',${i},'usa',this.checked)"> <span class="nome">${esc(p.nome)||'(sem nome)'}</span></label>
+        <button class="rm" onclick="rmLista('produtos',${i})">✕</button>
+      </div>
+      <div class="linha">
+        <div class="field"><label>Nome</label><input value="${esc(p.nome)}" oninput="setLista('produtos',${i},'nome',this.value)"></div>
+        <div class="field w-preco"><label>Preço R$</label><input type="number" inputmode="decimal" value="${p.preco??0}" oninput="setLista('produtos',${i},'preco',num(this.value))"></div>
+      </div>
+    </div>`).join('') + `<button class="btn btn-ghost" onclick="addLista('produtos',{nome:'',preco:0,usa:true})">+ Adicionar produto</button>` : ''}
+  </div>`;
+}
+
+const REGRAS = [
+  ['tabela', 'A comissão normal dele', 'Sobre o preço de tabela do serviço. O assinante não paga, mas pro barbeiro é igual a um cliente comum.'],
+  ['fixo',   'Um valor fixo por atendimento', 'Ele ganha sempre o mesmo por assinante atendido, não importa o serviço.'],
+  ['bolo',   'Uma parte do que os planos arrecadam', 'Junta uma fatia da mensalidade de todo mundo e divide entre os barbeiros por quem mais atendeu.'],
+  ['zero',   'Nada', 'Atendimento de assinante não gera comissão.'],
+];
+
+function secPlanos() {
+  const usaBolo = (D.planos||[]).some(p => p.regra === 'bolo');
+  return `<div class="card">
+    <h2><span class="num">6</span> Plano de assinatura</h2>
+    <p class="ajuda">Aquele plano mensal em que o cliente paga um valor fixo e vem quantas vezes quiser nos dias combinados.</p>
+    <div class="sim-nao">
+      <button class="${D.vende_plano?'on':''}" onclick="setRaiz('vende_plano',true)">Tenho plano</button>
+      <button class="${D.vende_plano?'':'on'}" onclick="setRaiz('vende_plano',false)">Não tenho</button>
+    </div>
+    ${!D.vende_plano ? '' : (D.planos||[]).map((p,i)=>`<div class="item">
+      <div class="item-topo">
+        <div class="field" style="flex:1;margin:0"><label>Nome do plano</label><input value="${esc(p.nome)}" oninput="setLista('planos',${i},'nome',this.value)" placeholder="Ex.: Plano Cabelo"></div>
+        <button class="rm" onclick="rmLista('planos',${i})">✕</button>
+      </div>
+      <div class="field"><label>Valor por mês R$</label><input type="number" inputmode="decimal" value="${p.valor_mensal??0}" oninput="setLista('planos',${i},'valor_mensal',num(this.value))"></div>
+      <div class="field"><label>O que está incluso</label><div class="chips">
+        ${(D.servicos||[]).filter(s=>s.usa&&s.nome).map(s=>`<button class="chip ${(p.servicos||[]).includes(s.nome)?'on':''}" onclick="togglePlanoServ(${i},'${esc(s.nome).replace(/'/g,"\\'")}')">${esc(s.nome)}</button>`).join('')}
+      </div></div>
+      <div class="field"><label>Vale em quais dias</label><div class="chips">
+        ${DIAS_CURTO.map((d,di)=>`<button class="chip ${(p.dias||[]).includes(di)?'on':''}" onclick="togglePlanoDia(${i},${di})">${d}</button>`).join('')}
+      </div></div>
+      <div class="field" style="margin-bottom:0"><label>Quando o barbeiro atende um assinante, ele ganha</label>
+        ${REGRAS.map(([v,t,ex])=>`<label class="regra-opt ${p.regra===v?'on':''}">
+          <input type="radio" name="regra-${i}" ${p.regra===v?'checked':''} onchange="setLista('planos',${i},'regra','${v}')">
+          <span class="txt"><b>${t}</b><span>${ex}</span></span></label>`).join('')}
+        ${p.regra==='fixo'?`<div class="field" style="margin-top:8px;margin-bottom:0"><label>Quanto por atendimento R$</label><input type="number" inputmode="decimal" value="${p.valor_fixo??''}" oninput="setLista('planos',${i},'valor_fixo',num(this.value))"></div>`:''}
+      </div>
+    </div>`).join('') + `<button class="btn btn-ghost" onclick="addLista('planos',{nome:'',valor_mensal:0,servicos:[],dias:[1,2,3],regra:'tabela',valor_fixo:null})">+ Adicionar plano</button>`}
+    ${D.vende_plano && usaBolo ? `<div class="field" style="margin-top:14px;margin-bottom:0"><label>Quanto do dinheiro dos planos vai pros barbeiros (%)</label>
+      <input type="number" inputmode="decimal" value="${D.comissao_padrao??45}" oninput="setRaiz('comissao_padrao',num(this.value))"></div>` : ''}
+  </div>`;
+}
+
+function secPagamento() {
+  const formas = ['Dinheiro','Pix','Cartão','Cartão débito','Cartão crédito'];
+  return `<div class="card">
+    <h2><span class="num">7</span> Como o cliente paga</h2>
+    <p class="ajuda">Marque tudo que você aceita. Isso vira a lista do fechamento do caixa.</p>
+    <div class="chips">${formas.map(f=>`<button class="chip ${(D.formas_pagamento||[]).includes(f)?'on':''}" onclick="toggleForma('${f}')">${f}</button>`).join('')}</div>
+  </div>`;
+}
+
+// ── Estado ────────────────────────────────────────────────────────────
+function setCampo(obj, campo, v) { D[obj] = D[obj]||{}; D[obj][campo] = v; marcarSujo(); }
+function setRaiz(campo, v) { D[campo] = v; marcarSujo(); render(); }
+function setLista(lista, i, campo, v) {
+  D[lista][i][campo] = v;
+  marcarSujo();
+  // Nome/preço redigitados não podem re-renderizar (perderia o foco). O resto sim.
+  if (!['nome','preco','valor_mensal','comissao_pct','valor_fixo','duracao_min'].includes(campo)) render();
+}
+function addLista(lista, item) { D[lista] = D[lista]||[]; D[lista].push(item); marcarSujo(); render(); }
+function rmLista(lista, i) { D[lista].splice(i,1); marcarSujo(); render(); }
+function setHora(i, campo, v) { D.horarios[String(i)] = D.horarios[String(i)]||{abre:'08:00',fecha:'19:00'}; D.horarios[String(i)][campo] = v; marcarSujo(); }
+function fechaDia(i, fecha) { D.horarios[String(i)] = fecha ? null : {abre:'08:00',fecha:'19:00'}; marcarSujo(); render(); }
+function copiarHorario() {
+  const base = D.horarios['1'];
+  if (!base) return alert('Preencha a segunda-feira primeiro.');
+  for (let i=1;i<=6;i++) if (D.horarios[String(i)]) D.horarios[String(i)] = {...base};
+  marcarSujo(); render();
+}
+function togglePlanoServ(i, nome) {
+  const a = D.planos[i].servicos = D.planos[i].servicos||[];
+  const k = a.indexOf(nome); k<0 ? a.push(nome) : a.splice(k,1); marcarSujo(); render();
+}
+function togglePlanoDia(i, dia) {
+  const a = D.planos[i].dias = D.planos[i].dias||[];
+  const k = a.indexOf(dia); k<0 ? a.push(dia) : a.splice(k,1); marcarSujo(); render();
+}
+function toggleForma(f) {
+  const a = D.formas_pagamento = D.formas_pagamento||[];
+  const k = a.indexOf(f); k<0 ? a.push(f) : a.splice(k,1); marcarSujo(); render();
+}
+function maskTel(v) {
+  const d = String(v||'').replace(/\D/g,'').slice(0,11), len = d.length;
+  if (!len) return ''; if (len < 3) return '('+d;
+  const ddd = d.slice(0,2), r = d.slice(2);
+  if (len <= 6) return `(${ddd}) ${r}`;
+  if (len <= 10) return `(${ddd}) ${r.slice(0,4)}-${r.slice(4)}`;
+  return `(${ddd}) ${r.slice(0,5)}-${r.slice(5)}`;
+}
+
+async function enviar() {
+  const nome = (D.barbearia||{}).nome;
+  if (!nome || !nome.trim()) return alert('Falta o nome da barbearia (item 1).');
+  const equipe = (D.barbeiros||[]).filter(b=>(b.nome||'').trim());
+  if (!equipe.length) return alert('Coloque pelo menos um barbeiro (item 2).');
+  if (!(D.servicos||[]).some(s=>s.usa&&(s.nome||'').trim())) return alert('Deixe pelo menos um serviço marcado (item 3).');
+  if (!confirm('Enviar a ficha pra JOGA? Você ainda pode reabrir o link e corrigir depois.')) return;
+  const b = document.getElementById('b-enviar');
+  b.disabled = true; b.textContent = 'Enviando…';
+  if (await salvar(true)) {
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('barra').style.display = 'none';
+    document.getElementById('fim').style.display = 'block';
+    window.scrollTo(0,0);
+  } else { b.disabled = false; b.textContent = 'Enviar pra JOGA'; }
+}
+
+(async () => {
+  try {
+    const r = await fetch('/api/coleta?t=' + encodeURIComponent(T));
+    const j = await r.json();
+    if (!j.ok) { document.body.innerHTML = '<div class="fim"><h2>Ficha indisponível</h2><p>Esse link expirou ou já foi usado.<br>Fale com a JOGA pra receber um novo.</p></div>'; return; }
+    D = j.dados;
+    render();
+    document.getElementById('salvo').textContent = '✓ salvo';
+    document.getElementById('salvo').classList.add('ok');
+  } catch { document.body.innerHTML = '<div class="fim"><h2>Sem conexão</h2><p>Tente abrir o link de novo.</p></div>'; }
+})();
+</script>
+</body>
+</html>

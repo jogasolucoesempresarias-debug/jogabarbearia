@@ -52,6 +52,8 @@
 <script src="/static/qrcode.min.js"></script>
 <script>
 let ATUAL='serv', SERVICOS=[], CFG={};
+// Cor do app (fixa no app.css). Não existe cor por barbearia: o tema é o mesmo em todas.
+const ACCENT = '#38bdf8';
 function tab(t,btn){ ATUAL=t; document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); render(); }
 
 async function render() {
@@ -80,12 +82,12 @@ async function render() {
     SERVICOS = (await api('/api/servicos')).rows;
     const { rows } = await api('/api/planos');
     p.innerHTML = `<div class="card"><button class="btn btn-primary btn-block" onclick="novoPlano()">+ Novo plano</button></div>` +
-      '<div class="list">'+rows.map(pl=>`<div class="row-item" onclick='editarPlano(${JSON.stringify(pl)})'><div><div class="ri-main">${escapeHtml(pl.nome)}</div><div class="ri-sub">${money(pl.valor_mensal)}/mês · ${(pl.servicos||[]).map(x=>x.nome).join(', ')||'sem serviço'}</div></div><div class="muted">›</div></div>`).join('')+'</div>';
+      '<div class="list">'+rows.map(pl=>`<div class="row-item" onclick='editarPlano(${JSON.stringify(pl)})'><div><div class="ri-main">${escapeHtml(pl.nome)}</div><div class="ri-sub">${money(pl.valor_mensal)}/mês · ${(pl.servicos||[]).map(x=>x.nome).join(', ')||'sem serviço'}</div><div class="ri-sub muted">comissão: ${rotuloRegra(pl)}</div></div><div class="muted">›</div></div>`).join('')+'</div>';
   } else if (ATUAL==='qr') {
     CFG = (await api('/api/config')).config;
     const url = location.origin + '/cadastro';
     const nome = CFG.marca_nome || 'Barbearia';
-    const cor = CFG.marca_cor || '#38bdf8';
+    const cor = ACCENT;                      // o cartaz usa a mesma cor do app (não há cor por cliente)
     const inicial = escapeHtml(nome.trim().charAt(0).toUpperCase() || 'B');
     const urlBonita = escapeHtml(url.replace(/^https?:\/\//, ''));
     p.innerHTML = `<div class="card">
@@ -110,9 +112,10 @@ async function render() {
     const dias = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
     p.innerHTML = `<div class="card">
       <div class="field"><label>Nome da barbearia (marca)</label><input id="g-nome" value="${escapeHtml(CFG.marca_nome||'')}"></div>
-      <div class="field"><label>Cor da marca</label><input type="color" id="g-cor" value="${CFG.marca_cor||'#38bdf8'}" style="height:48px"></div>
       <div class="field"><label>Formas de pagamento (separadas por vírgula)</label><input id="g-formas" value="${(CFG.formas_pagamento||[]).join(', ')}"></div>
       <div class="field"><label>Categorias de despesa (separadas por vírgula)</label><input id="g-catdesp" value="${(CFG.categorias_despesa||[]).join(', ')}"></div>
+      <div class="field"><label>% do bolo dos planos (comissão de assinante)</label><input id="g-bolo" type="number" inputmode="decimal" step="0.5" value="${CFG.comissao_padrao||45}"></div>
+      <div class="hint" style="margin-bottom:10px">Vale só para os planos com regra <strong>bolo</strong>: essa fatia da arrecadação deles é rateada entre os barbeiros pela produção. Planos com regra <em>tabela</em>, <em>fixo</em> ou <em>zero</em> não usam este número.</div>
       <button class="btn btn-primary btn-block" onclick="salvarGeral()">Salvar geral</button>
     </div>
     <div class="section-title">Horário de funcionamento</div>
@@ -147,22 +150,53 @@ function abrirPlano(pl){
     <div class="field"><label>Valor mensal (R$)</label><input id="pl-valor" type="number" inputmode="decimal" value="${pl.valor_mensal||0}"></div>
     <div class="field"><label>Dias inclusos</label><div class="chips">${dias.map((d,i)=>`<button class="chip" id="dia-${i}" style="${inc.includes(i)?'border-color:var(--accent);color:var(--accent)':''}" onclick="toggleDia(${i})">${d}</button>`).join('')}</div></div>
     <div class="field"><label>Serviços inclusos</label><div class="chips">${SERVICOS.map(s=>`<button class="chip" id="srv-${s.id}" style="${servIds.includes(s.id)?'border-color:var(--accent);color:var(--accent)':''}" onclick="toggleSrv(${s.id})">${escapeHtml(s.nome)}</button>`).join('')}</div></div>
-    <div class="hint" style="margin-bottom:10px">A comissão dos assinantes é um <strong>bolo de 45% da arrecadação dos planos</strong>, rateado entre os barbeiros pela produção (configurado em Geral). Não é por plano.</div>
+    <div class="section-title">Comissão do barbeiro neste plano</div>
+    <div class="field"><select id="pl-regra" onchange="regraMudou()">
+      ${REGRAS.map(r=>`<option value="${r[0]}" ${(pl.comissao_assinante_regra||'bolo')===r[0]?'selected':''}>${r[1]}</option>`).join('')}
+    </select></div>
+    <div class="field" id="pl-valor-box" style="display:none"><label>R$ por atendimento de assinante</label>
+      <input id="pl-comvalor" type="number" inputmode="decimal" value="${pl.comissao_assinante_valor||''}"></div>
+    <div class="hint" id="pl-regra-hint" style="margin-bottom:10px"></div>
     <button class="btn btn-primary btn-block" onclick="salvarPlano()">Salvar plano</button>
     <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="render()">Voltar</button>
   </div>`;
   window._dias = [...inc]; window._srv = [...servIds];
+  regraMudou();
+}
+const REGRAS = [
+  ['bolo',   'Bolo rateado pela produção'],
+  ['tabela', 'Como avulso (% sobre o preço cheio)'],
+  ['fixo',   'R$ fixo por atendimento'],
+  ['zero',   'Sem comissão'],
+];
+const REGRA_HINT = {
+  bolo:   'Uma fatia da arrecadação deste plano (o % está em <strong>Geral</strong>) vira um bolo, rateado entre os barbeiros pela produção do período. É o modelo da barbearia da Regiane.',
+  tabela: 'O assinante paga R$0, mas o barbeiro ganha a comissão normal dele sobre o <strong>preço cheio</strong> do serviço. Simples de explicar: pro barbeiro, assinante é igual a cliente comum.',
+  fixo:   'O barbeiro ganha um valor fixo por atendimento de assinante, não importa o serviço. Se dois barbeiros atendem a mesma visita, cada um conta a sua.',
+  zero:   'Atendimento de assinante não gera comissão nenhuma. Use com cuidado — costuma gerar atrito com a equipe.',
+};
+function rotuloRegra(pl){
+  const r = pl.comissao_assinante_regra || 'bolo';
+  if (r==='fixo') return `R$ fixo (${money(pl.comissao_assinante_valor||0)}/atendimento)`;
+  return (REGRAS.find(x=>x[0]===r)||[,r])[1];
+}
+function regraMudou(){
+  const el = document.getElementById('pl-regra'); if(!el) return;
+  document.getElementById('pl-valor-box').style.display = el.value==='fixo' ? '' : 'none';
+  document.getElementById('pl-regra-hint').innerHTML = REGRA_HINT[el.value] || '';
 }
 function toggleDia(i){ const a=window._dias; const idx=a.indexOf(i); if(idx<0)a.push(i);else a.splice(idx,1); const el=document.getElementById('dia-'+i); el.style=a.includes(i)?'border-color:var(--accent);color:var(--accent)':''; }
 function toggleSrv(id){ const a=window._srv; const idx=a.indexOf(id); if(idx<0)a.push(id);else a.splice(idx,1); const el=document.getElementById('srv-'+id); el.style=a.includes(id)?'border-color:var(--accent);color:var(--accent)':''; }
 async function salvarPlano(){
-  const body={ nome:V('pl-nome'), valor_mensal:V('pl-valor'), dias_inclusos:window._dias, servicos:window._srv };
+  const body={ nome:V('pl-nome'), valor_mensal:V('pl-valor'), dias_inclusos:window._dias, servicos:window._srv,
+               comissao_assinante_regra:V('pl-regra'),
+               comissao_assinante_valor: V('pl-regra')==='fixo' ? V('pl-comvalor') : null };
   try { if(editId) await api('/api/planos/'+editId,{method:'PUT',body}); else await api('/api/planos',{method:'POST',body}); toast('Plano salvo!','ok'); tab('plano',document.querySelector('[data-t=plano]')); }
   catch(e){ toast(e.message,'err'); }
 }
 
 async function salvarGeral(){
-  try { await api('/api/config',{method:'PUT',body:{ marca_nome:V('g-nome'), marca_cor:V('g-cor'), formas_pagamento:V('g-formas').split(',').map(s=>s.trim()).filter(Boolean), categorias_despesa:V('g-catdesp').split(',').map(s=>s.trim()).filter(Boolean) }}); toast('Salvo!','ok'); }
+  try { await api('/api/config',{method:'PUT',body:{ marca_nome:V('g-nome'), comissao_padrao:V('g-bolo')||45, formas_pagamento:V('g-formas').split(',').map(s=>s.trim()).filter(Boolean), categorias_despesa:V('g-catdesp').split(',').map(s=>s.trim()).filter(Boolean) }}); toast('Salvo!','ok'); }
   catch(e){ toast(e.message,'err'); }
 }
 async function salvarHorarios(){

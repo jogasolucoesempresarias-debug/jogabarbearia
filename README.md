@@ -21,13 +21,23 @@ Fuso horário **America/Sao_Paulo** (app via `TZ` e conexão do banco via `optio
 ## Conceitos
 - **Comanda** é o pivô: ao fechar vira **receita no caixa**, registra a produção e respeita o **plano**
   (assinante atendido em dia coberto sai R$0; fora dos dias do plano vira cliente normal/avulso).
-- **Comissão**:
+- **Comissão** (motor único em `calc_comissao`, usado pelo fechamento do dono e pela tela do barbeiro):
   - **Avulso**: 45% (config por barbeiro) sobre o valor do serviço executado.
-  - **Assinante (POOL)**: 45% (`config.comissao_padrao`) da **arrecadação dos planos** no período,
-    rateado pela **produção** (1 visita = 1 atendimento, mesmo com vários serviços). A **dona não
-    recebe comissão** (`recebe_comissao=false`); a fração dos atendimentos dela fica com a casa.
+  - **Assinante**: a regra é **do plano** (`planos.comissao_assinante_regra`), porque cada barbearia
+    vende plano de um jeito. Um plano nunca cai em duas regras:
+    - `bolo` — % (`config.comissao_padrao`) da arrecadação **dos planos 'bolo'** no período, rateado
+      pela **produção** (1 visita = 1 atendimento, mesmo com vários serviços). Atribuição por comanda.
+      A **dona não recebe comissão** (`recebe_comissao=false`); a fração dela fica com a casa, e a tela
+      mostra **distribuído × retido**.
+    - `tabela` — comissão normal do barbeiro sobre o **preço cheio** do serviço coberto, direto pra
+      quem executou o item. O assinante paga R$0 e pro barbeiro é igual a um cliente avulso.
+    - `fixo` — R$ por visita coberta, direto pra quem executou. Dois barbeiros na mesma visita
+      contam uma cada.
+    - `zero` — assinante não gera comissão.
   - **Fechar/pagar comissão** por barbeiro/quinzena → vira **despesa "Comissões" no caixa** e marca
     pago/pendente (tabela `comissoes_pagas`). Filtro por barbeiro + "fechar todos os pendentes".
+    O **valor é editável** no fechamento: se diferir do calculado, o motivo é obrigatório e fica
+    gravado (`valor_calculado` × `valor` × `ajuste_motivo`). O calculado vem do motor, nunca do front.
 - **Planos de assinatura** (configuráveis: valor, serviços, dias, vencimento 10/30, múltiplos):
   na criação **cobra a 1ª mensalidade na hora** (cai no caixa hoje); a **próxima** vence no dia
   10/30 escolhido, **a partir do mês seguinte**; "Gerar cobranças do mês" cria as próximas como
@@ -48,6 +58,32 @@ Fuso horário **America/Sao_Paulo** (app via `TZ` e conexão do banco via `optio
 - **Agenda**: slots de 30min, multi-serviço (soma a duração), walk-in, bloqueio/folga, cancelamento
   sem taxa, horário por dia.
 - **Cadastro de cliente**: telefone com máscara `(DD) 9XXXX-XXXX` e nome em MAIÚSCULO.
+- **Onboarding de uma barbearia nova** (entrega assistida — o cliente não encara wizard nenhum):
+  1. `/setup` (login dono/master) → **gera o link da ficha** com token.
+  2. `/coleta?t=TOKEN` — página **pública**, mobile, salvamento automático. A barbearia preenche só
+     o que só ela sabe: nome, equipe (quem é o dono, % de cada um, quem precisa de login), serviços
+     com preço e duração, horário, produtos, planos e formas de pagamento. Tudo já vem no preset
+     (`PRESET_FICHA`), ele edita em vez de criar. A pergunta da comissão do assinante aparece em
+     linguagem de dono e vira a regra do plano.
+  3. `/setup` de novo → resumo do que vai nascer, **importar/exportar JSON** (começar de outra
+     barbearia pronta) e **Aplicar**: cria tudo numa transação só, gera os logins (senha
+     `SEED_SENHA_INICIAL`, troca no 1º acesso) e devolve a lista pra você entregar.
+  - Aplicar **roda uma vez**: é bloqueado se a ficha já foi aplicada ou se a instância já tem
+    comandas/lançamentos (evita cadastro duplicado). Depois disso o token é anulado e `/coleta` fecha.
+- **Hub de coleta** (`MODO_COLETA=1`, em `coletabarbearia.jogasolucoes.com.br`): mesma imagem, banco
+  próprio, **não é barbearia nenhuma**. Serve pra mandar a ficha ainda na negociação sem abrir
+  instância pra quem não fechou. Guarda **N fichas** (uma por prospect, cada uma com seu token e seu
+  status); o `/setup` vira uma lista com "criar ficha", link, "copiar a ficha" e apagar. O **aplicar
+  é bloqueado** nele. Fechou a venda → cria a instância do cliente, cola a ficha no `/setup` de lá e
+  aplica. Stack em `docker-compose.coleta.yml`.
+- **Alerta de WhatsApp**: quando o prospect clica em *Enviar*, a JOGA recebe um aviso via **UazAPI**
+  (`POST /send/text`, mesmo contrato do DanfeZap/diagnóstico) com o nome da barbearia, o tamanho da
+  ficha e o link pra ver. Vai em **thread de fundo** — o cliente não espera rede, e falha de WhatsApp
+  nunca derruba o salvamento. Salvar rascunho não alerta, só o envio. `ALERTAS_ATIVO` é a trava
+  mestra: desligada, nada sai (é o que mantém dev e smokes quietos).
+- **Sem cor por cliente**: o tema do app é fixo (`app.css`). `configuracoes.marca_cor` continua no
+  banco por compatibilidade, mas **não é lida por nada** — o que existe de verdade é a `cor_agenda`
+  de cada barbeiro, atribuída automaticamente de uma paleta pra distinguir as colunas da agenda.
 
 ## Variáveis de ambiente (`.env` / Portainer)
 ```
@@ -56,6 +92,11 @@ DB_HOST/PORT/NAME/USER/PASSWORD
 SEED_SENHA_INICIAL    # senha inicial dos usuários semeados (troca no 1º login)
 SUPORTE_EMAIL         # acesso master JOGA (vazio = desativado)
 SUPORTE_SENHA
+MODO_COLETA           # 1 = hub de coleta (não é barbearia; guarda N fichas). Vazio = instância normal
+ALERTAS_ATIVO         # 1 = dispara o WhatsApp de verdade. Vazio = só loga (dev/testes)
+UAZAPI_URL            # https://free.uazapi.com
+UAZAPI_TOKEN
+ALERTA_WHATSAPP       # quem recebe o aviso, separado por vírgula
 ```
 
 ## Setup local (dev)
@@ -78,6 +119,16 @@ comissão**) · `joaovictor@barbearia.local` (barbeiro). `_reset.py` reseta o ba
 - `_smoke_despesas.py` — despesas, categorias, fixas (gerar do mês)
 - `_smoke_assinatura.py` — 1ª no caixa hoje + próxima no dia 10/30 do mês seguinte
 - `_smoke_uso.py` — registrar visita de assinante, Uso dos Planos e DRE aprimorado (test_client)
+- `_smoke_regras.py` — as 4 regras de comissão do assinante + o ajuste manual no fechamento
+- `_smoke_onboarding.py` — ficha → aplicar → barbearia nascida, **num banco descartável próprio**
+  (cria/derruba `joga_barbearia_smoke` e sobe um servidor na 5003; não toca no banco de dev)
+- `_smoke_hub.py` — hub `MODO_COLETA=1`: N fichas convivendo, token de uma não abre a outra,
+  aplicar bloqueado (banco descartável próprio)
+- `_smoke_alerta.py` — alerta de WhatsApp: sobe uma **UazAPI de mentira** local e confere número
+  normalizado, header do token, texto e os 2 destinatários — sem gastar mensagem nem usar internet
+
+> Os smokes que sobem servidor escolhem **porta livre pelo SO**. Porta fixa fazia o teste conversar
+> com um servidor de dev já rodando e validar a instância errada em silêncio.
 - `_teste_completo.py` — bateria ponta a ponta
 
 ## Deploy
@@ -96,7 +147,9 @@ init_db.py           # schema (idempotente, migrações aditivas)
 seed_barbearia.py    # dados pré-configurados (serviços, produtos, 2 barbeiros, horários, 3 planos)
 static/app.css|js    # shell mobile-first (bottom-nav, máscara telefone, helpers)
 agenda · comanda · clientes · assinaturas · uso(Uso dos Planos) · caixa · despesas · relatorios(Comissões) · dre · config · barbeiro .html
-login.html · trocar-senha.html
+login.html · trocar-senha.html · cadastro.html(QR público)
+coleta.html      # ficha pública da barbearia nova (autossuficiente, não usa app.js)
+setup.html       # painel da JOGA: link, importar/exportar, conferir e aplicar
 manifest.json · sw.js  # PWA (service worker network-first)
 docker-compose.prod.yml · .github/workflows/deploy.yml · Dockerfile
 ```

@@ -25,7 +25,8 @@
 
   <div class="grid2">
     <div class="card kpi"><div class="label">Arrecadação dos planos</div><div class="value" id="arrecad">—</div></div>
-    <div class="card kpi"><div class="label">Bolo da equipe (45%)</div><div class="value pos" id="bolo">—</div></div>
+    <div class="card kpi"><div class="label" id="bolo-label">Bolo da equipe</div><div class="value pos" id="bolo">—</div>
+      <div class="ri-sub muted" id="bolo-sub"></div></div>
   </div>
   <div class="card kpi"><div class="label">Total de comissões (avulso + bolo)</div><div class="value" id="total">—</div></div>
   <div class="section-title">Por barbeiro</div>
@@ -64,6 +65,13 @@ async function carregar() {
     const j = await api(`/api/relatorios/comissao?de=${de}&ate=${ate}`);
     document.getElementById('arrecad').textContent = money(j.plan_revenue);
     document.getElementById('bolo').textContent = money(j.pool);
+    document.getElementById('bolo-label').textContent = `Bolo da equipe (${j.pool_pct}%)`;
+    // O que não foi distribuído fica com a casa (fatia de quem não recebe comissão, ou ninguém
+    // atendeu assinante no período). Sem isso a soma dos barbeiros "não bate" e ninguém entende.
+    const sub = document.getElementById('bolo-sub');
+    if (j.pool_retido > 0.005) sub.textContent = `distribuído ${money(j.pool_distribuido)} · retido pela casa ${money(j.pool_retido)}`;
+    else if (j.plan_revenue > j.pool_revenue) sub.textContent = `sobre ${money(j.pool_revenue)} de planos com regra "bolo"`;
+    else sub.textContent = '';
     document.getElementById('total').textContent = money(j.total);
     PERIODO = { de, ate };
     ROWS = j.rows;
@@ -89,20 +97,46 @@ function renderLista() {
   } else { bulk.innerHTML = ''; }
 
   document.getElementById('lista').innerHTML = rows.length
-    ? rows.map(r=>`<div class="row-item"><div>
+    ? rows.map(r=>`<div class="row-item" style="flex-wrap:wrap"><div>
         <div class="ri-main">${escapeHtml(r.profissional||'—')} ${r.pago?'<span class="badge pago">pago</span>':'<span class="badge previsto">pendente</span>'}</div>
-        <div class="ri-sub">avulso ${money(r.avulso)} · bolo ${money(r.pool_share)} <span class="muted">(${r.participacao_pct}% · ${r.atend} atend.)</span></div></div>
+        <div class="ri-sub">${composicao(r)}</div>
+        ${r.pago&&r.ajuste_motivo?`<div class="ri-sub muted">ajustado p/ ${money(r.valor_pago)} — ${escapeHtml(r.ajuste_motivo)}</div>`:''}</div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
           <div class="ri-right" style="color:var(--green)">${money(r.total)}</div>
-          ${r.pago?'':`<button class="btn btn-sm btn-primary" onclick="fechar(${r.profissional_id}, ${r.total})">Fechar e pagar</button>`}
+          ${r.pago?'':`<button class="btn btn-sm btn-primary" onclick="abrirFechamento(${r.profissional_id})">Fechar e pagar</button>`}
+        </div>
+        <div id="fech-${r.profissional_id}" style="display:none;width:100%;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+          <div class="field"><label>Valor a pagar</label><input type="number" inputmode="decimal" id="fv-${r.profissional_id}" value="${r.total}" oninput="mostrarMotivo(${r.profissional_id}, ${r.total})"></div>
+          <div class="field" id="fm-box-${r.profissional_id}" style="display:none"><label>Motivo do ajuste (fica no histórico)</label><input id="fm-${r.profissional_id}" placeholder="ex.: vale adiantado, acerto do mês passado"></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" style="flex:1" onclick="confirmarFechamento(${r.profissional_id})">Confirmar</button>
+            <button class="btn btn-ghost" onclick="document.getElementById('fech-${r.profissional_id}').style.display='none'">Cancelar</button>
+          </div>
         </div></div>`).join('')
     : '<div class="empty">Nenhum atendimento no período.</div>';
 }
 
-async function fechar(pid, valor) {
+function composicao(r) {
+  const p = [`avulso ${money(r.avulso)}`];
+  if (r.assinante_direto > 0) p.push(`assinante ${money(r.assinante_direto)}`);
+  if (r.pool_share > 0 || r.atend > 0) p.push(`bolo ${money(r.pool_share)} <span class="muted">(${r.participacao_pct}% · ${r.atend} atend.)</span>`);
+  return p.join(' · ');
+}
+function abrirFechamento(pid) {
+  const el = document.getElementById('fech-'+pid);
+  el.style.display = el.style.display==='none' ? '' : 'none';
+}
+function mostrarMotivo(pid, calculado) {
+  const v = Number(document.getElementById('fv-'+pid).value);
+  document.getElementById('fm-box-'+pid).style.display = Math.abs(v - calculado) >= 0.01 ? '' : 'none';
+}
+async function confirmarFechamento(pid) {
+  const valor = Number(document.getElementById('fv-'+pid).value);
+  const motivoEl = document.getElementById('fm-'+pid);
+  if (!(valor >= 0)) return toast('Valor inválido', 'err');
   if (!confirm(`Fechar e pagar ${money(valor)} de comissão? Vira despesa no caixa.`)) return;
   try {
-    await api('/api/comissoes/fechar', { method:'POST', body:{ profissional_id: pid, de: PERIODO.de, ate: PERIODO.ate, valor } });
+    await api('/api/comissoes/fechar', { method:'POST', body:{ profissional_id: pid, de: PERIODO.de, ate: PERIODO.ate, valor, ajuste_motivo: motivoEl ? motivoEl.value : '' } });
     toast('Comissão fechada e lançada no caixa!', 'ok'); carregar();
   } catch (e) { toast(e.message, 'err'); }
 }
