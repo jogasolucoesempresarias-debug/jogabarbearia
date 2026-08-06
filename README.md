@@ -10,6 +10,47 @@ JOGA Soluções Empresariais. **Instância própria por cliente** (banco/subdom�
 Flask + Waitress · PostgreSQL · HTML/CSS/JS puro (mobile-first) + PWA · Docker Swarm/Traefik/GHCR.
 Fuso horário **America/Sao_Paulo** (app via `TZ` e conexão do banco via `options`).
 
+## Instâncias em produção
+
+**Uma imagem só** (`ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:latest`) serve as três. O que
+muda entre elas é **variável de ambiente e banco** — não há branch nem repositório separado.
+
+| Domínio | O que é | Banco | Stack (Portainer) | Serviço (Swarm) | Modo |
+|---|---|---|---|---|---|
+| `barbearia.jogasolucoes.com.br` | Cliente real (Regiane) | `joga_barbearia` | `barbearia` | `barbearia_barbearia-app` | — |
+| `coletabarbearia.jogasolucoes.com.br` | Hub de fichas dos prospects | `joga_coleta` | `coletabarbearia` | `coletabarbearia_coleta-app` | `MODO_COLETA=1` |
+| `demobarbearia.jogasolucoes.com.br` | Demonstração pública | `barbearia_demo` | `barbearia_demo` | `barbearia_demo_app` | `MODO_DEMO=1` |
+
+Cliente novo = **subdomínio novo** de `jogasolucoes.com.br` (não se compra domínio), banco novo e
+stack nova. Com um registro DNS wildcard (`*.jogasolucoes.com.br → IP do VPS`) não é preciso mexer no
+DNS a cada cliente; o certificado sai por domínio, via desafio HTTP do Let's Encrypt.
+
+> ⚠️ **O nome do router/service do Traefik é único no SERVIDOR INTEIRO, não por stack.** Nome repetido
+> faz o router ser **descartado em silêncio**: não há rota, não há pedido de certificado, e o
+> navegador recebe `TRAEFIK DEFAULT CERT` — **sem uma linha de erro no log do Traefik**. Foi o que
+> aconteceu ao usar `demo`, que já existia no host. Antes de subir stack nova, confira:
+> `docker service ls --format "{{.Name}}"` e escolha um nome que não exista.
+>
+> ⚠️ Cada instância precisa de **`SECRET_KEY` própria**. Repetida, o cookie de sessão de uma vale na
+> outra.
+
+## Acessos (login e senha)
+
+**Nenhuma senha fica neste repositório.** Os `docker-compose.*.yml` usam `${VARIÁVEL}`; os valores
+reais vivem só no Portainer. Senha de banco e senha do master comitadas ficam no histórico do git
+para sempre, mesmo depois de trocadas.
+
+| Instância | Como se entra |
+|---|---|
+| **Cliente (Regiane)** | Usuários no banco (`dono`, `caixa`, `barbeiro`), criados pelo seed ou pelo *Aplicar* da ficha. Senha inicial = `SEED_SENHA_INICIAL`, **trocada no 1º acesso** (`must_change_password`). Mais o master da JOGA por env. |
+| **Hub de coleta** | **Só** o master da JOGA (`SUPORTE_EMAIL`/`SUPORTE_SENHA`). Não existe usuário no banco: se essas envs estiverem vazias ou erradas, **ninguém entra, nem você**. O prospect não faz login — a ficha abre por token no link. |
+| **Demonstração** | Dois usuários no banco com **senha publicada na própria tela de login** (`SENHA_DEMO`, padrão `demo`): `ze@barbearia.local` (dono) e `rafael@barbearia.local` (barbeiro). Sem troca de senha obrigatória — o prospect não pode ser barrado. **Não configure `SUPORTE_*` aqui**: é a instância mais exposta que existe e o acesso master não tem por que viver nela. |
+
+O **master (`SUPORTE_EMAIL`/`SUPORTE_SENHA`)** não fica no banco: é comparado direto contra a env, com
+`hmac.compare_digest`, e entra com role `dono` e `user_id` nulo (por isso `criado_por` fica NULL no que
+ele cria). Só existe se as duas envs estiverem preenchidas. Serve para configurar e dar suporte sem
+criar usuário na barbearia do cliente.
+
 ## Perfis (RBAC)
 - **dono** — acesso total: agenda, comanda, caixa, despesas, comissões, DRE e configurações.
 - **caixa/recepção** — operação: agenda, comanda, caixa, despesas, etc.
@@ -96,17 +137,24 @@ Fuso horário **America/Sao_Paulo** (app via `TZ` e conexão do banco via `optio
 
 ## Variáveis de ambiente (`.env` / Portainer)
 ```
-SECRET_KEY            # chave do Flask
+SECRET_KEY            # chave do Flask — PRÓPRIA por instância (repetida, a sessão vaza entre elas)
 DB_HOST/PORT/NAME/USER/PASSWORD
 SEED_SENHA_INICIAL    # senha inicial dos usuários semeados (troca no 1º login)
-SUPORTE_EMAIL         # acesso master JOGA (vazio = desativado)
+SUPORTE_EMAIL         # acesso master JOGA (vazio = desativado). NÃO usar na demo
 SUPORTE_SENHA
 MODO_COLETA           # 1 = hub de coleta (não é barbearia; guarda N fichas). Vazio = instância normal
+MODO_DEMO             # 1 = demonstração: senha na tela de login, /setup fechado, libera o seed_demo
+SENHA_DEMO            # senha dos logins da demo (padrão: demo)
+DEMO_DIAS             # dias de histórico gerados pelo seed_demo (padrão: 180)
 ALERTAS_ATIVO         # 1 = dispara o WhatsApp de verdade. Vazio = só loga (dev/testes)
 UAZAPI_URL            # https://free.uazapi.com
 UAZAPI_TOKEN
 ALERTA_WHATSAPP       # quem recebe o aviso, separado por vírgula
 ```
+
+Combinações válidas: nenhum modo (barbearia de cliente) · `MODO_COLETA=1` (hub) · `MODO_DEMO=1`
+(demonstração). **Nunca os dois juntos** — o hub esconde a navegação da barbearia e a demo precisa
+dela.
 
 ## Setup local (dev)
 ```powershell
@@ -121,6 +169,19 @@ $env:PORT="5002"; .\.venv\Scripts\python.exe -X utf8 server.py   # http://localh
 **Logins** (senha `joga123`, troca no 1º acesso): `regiane@barbearia.local` (dona+barbeira, **sem
 comissão**) · `joaovictor@barbearia.local` (barbeiro). `_reset.py` reseta o banco local (dev).
 
+Para rodar os outros dois modos localmente, basta banco próprio + a env do modo:
+```powershell
+# hub de coleta — entra pelo master (SUPORTE_EMAIL/SUPORTE_SENHA do .env)
+$env:DB_NAME="joga_coleta_local"; $env:MODO_COLETA="1"; $env:PORT="5005"
+.\.venv\Scripts\python.exe -X utf8 init_db.py; .\.venv\Scripts\python.exe -X utf8 server.py
+
+# demonstração — logins ze@ / rafael@ com a senha `demo`
+$env:DB_NAME="joga_demo_local"; $env:MODO_DEMO="1"; $env:PORT="5006"
+.\.venv\Scripts\python.exe -X utf8 init_db.py
+.\.venv\Scripts\python.exe -X utf8 seed_demo.py       # ~40s: gera 180 dias de histórico
+.\.venv\Scripts\python.exe -X utf8 server.py
+```
+
 ### Smoke tests (cada um limpa o resíduo no fim)
 - `_smoke.py` — fluxo operacional (cliente, agenda, comanda, caixa, assinatura, comissão)
 - `_smoke_pool.py` — rateio do bolo por visita
@@ -130,7 +191,7 @@ comissão**) · `joaovictor@barbearia.local` (barbeiro). `_reset.py` reseta o ba
 - `_smoke_uso.py` — registrar visita de assinante, Uso dos Planos e DRE aprimorado (test_client)
 - `_smoke_regras.py` — as 4 regras de comissão do assinante + o ajuste manual no fechamento
 - `_smoke_onboarding.py` — ficha → aplicar → barbearia nascida, **num banco descartável próprio**
-  (cria/derruba `joga_barbearia_smoke` e sobe um servidor na 5003; não toca no banco de dev)
+  (cria/derruba `joga_barbearia_smoke` e sobe um servidor só dele; não toca no banco de dev)
 - `_smoke_hub.py` — hub `MODO_COLETA=1`: N fichas convivendo, token de uma não abre a outra,
   aplicar bloqueado (banco descartável próprio)
 - `_smoke_alerta.py` — alerta de WhatsApp: sobe uma **UazAPI de mentira** local e confere número
@@ -144,24 +205,61 @@ comissão**) · `joaovictor@barbearia.local` (barbeiro). `_reset.py` reseta o ba
 - `_teste_completo.py` — bateria ponta a ponta
 
 ## Deploy
-`git push main` → GitHub Actions builda e publica no GHCR → no servidor:
+
+`git push main` → GitHub Actions builda e publica no GHCR com **duas tags**: `:latest` e
+`:sha-<commit>`. Migrações são aditivas (`IF NOT EXISTS`) e **nunca destroem dado**.
+
+**Confira que o build terminou antes de atualizar o serviço.** O Swarm usa `stop-first`: se a imagem
+não existir, ele **derruba o container antigo**, falha ao subir o novo e o serviço fica em **0/1**,
+fora do ar. Recuperação: `docker service update --rollback <serviço>`.
+
 ```bash
-docker service update --image ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:latest --force barbearia_barbearia-app
-docker exec $(docker ps -q -f name=barbearia) python -X utf8 init_db.py     # migrações são aditivas (IF NOT EXISTS)
+# 1. confira a tag no GHCR (ou espere o check verde no Actions)
+sudo docker pull ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:sha-<commit>
+
+# 2. atualize a instância desejada — use o NOME COMPLETO do serviço
+sudo docker service update --image ghcr.io/.../jogabarbearia:sha-<commit> --force barbearia_barbearia-app
+sudo docker exec $(sudo docker ps -q -f name=barbearia_barbearia) python -X utf8 init_db.py
 ```
-Stack em `docker-compose.prod.yml` (Traefik → `barbearia.jogasolucoes.com.br`). Migrações nunca
-destroem dado. Reinstalação limpa (teste): scale 0 → drop/create DB → scale 1 → init_db + seed.
+
+> ⚠️ `docker ps -f name=barbearia` casa com **a produção da Regiane e a demo** ao mesmo tempo. Use
+> sempre o nome completo (`barbearia_barbearia`, `barbearia_demo`) e confira antes com
+> `docker ps --format "{{.Names}}" | grep barbearia`.
+
+**Instância nova (cliente, hub ou demo)** — a ordem importa:
+```bash
+# 1. banco (o container do Postgres é o `postgres_postgres`, não os outros que casam com "postgres")
+sudo docker exec -it $(sudo docker ps -q -f name=postgres_postgres) psql -U admin -d postgres -c "CREATE DATABASE <banco>"
+# 2. stack no Portainer (docker-compose.prod / .coleta / .demo), com SECRET_KEY própria e router Traefik de nome inédito
+# 3. schema
+sudo docker exec $(sudo docker ps -q -f name=<stack>) python -X utf8 init_db.py
+# 4. dados: seed_barbearia.py (cliente) OU seed_demo.py (demo) OU nada (hub — ele nasce vazio de propósito)
+```
+
+Reinstalação limpa (teste): scale 0 → drop/create DB → scale 1 → `init_db` + seed.
+
+### Manutenção da demo
+```bash
+# reset manual (o mesmo script que popula) — apaga e refaz com as datas atualizadas
+sudo docker exec $(sudo docker ps -q -f name=barbearia_demo) python -X utf8 seed_demo.py
+# reset diário, no crontab do servidor
+0 4 * * * docker exec $(docker ps -q -f name=barbearia_demo) python -X utf8 seed_demo.py >> /var/log/barbearia-demo.log 2>&1
+```
 
 ## Estrutura
 ```
 server.py            # backend: auth+RBAC, agenda, comanda, assinaturas, despesas, caixa, comissões, DRE
-init_db.py           # schema (idempotente, migrações aditivas)
+init_db.py           # schema (idempotente, migrações aditivas + _migracoes p/ migração de DADO one-shot)
 seed_barbearia.py    # dados pré-configurados (serviços, produtos, 2 barbeiros, horários, 3 planos)
+seed_demo.py         # popula E reseta a demo (datas relativas a hoje; exige MODO_DEMO)
 static/app.css|js    # shell mobile-first (bottom-nav, máscara telefone, helpers)
 agenda · comanda · clientes · assinaturas · uso(Uso dos Planos) · caixa · despesas · relatorios(Comissões) · dre · config · barbeiro .html
 login.html · trocar-senha.html · cadastro.html(QR público)
 coleta.html      # ficha pública da barbearia nova (autossuficiente, não usa app.js)
-setup.html       # painel da JOGA: link, importar/exportar, conferir e aplicar
+setup.html       # painel da JOGA: link, importar/exportar, conferir e aplicar (lista de fichas no hub)
 manifest.json · sw.js  # PWA (service worker network-first)
-docker-compose.prod.yml · .github/workflows/deploy.yml · Dockerfile
+docker-compose.prod.yml    # cliente   → barbearia.jogasolucoes.com.br
+docker-compose.coleta.yml  # hub       → coletabarbearia.jogasolucoes.com.br  (MODO_COLETA=1)
+docker-compose.demo.yml    # demo      → demobarbearia.jogasolucoes.com.br    (MODO_DEMO=1)
+.github/workflows/deploy.yml · Dockerfile
 ```
