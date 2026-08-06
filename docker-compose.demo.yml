@@ -8,7 +8,10 @@
 # coleta de propósito: demo compartilhada se suja (um prospect fecha comanda, outro apaga serviço)
 # e precisa de reset — que aqui pode ser bruto, porque não há nada precioso no banco.
 #
-# ATENÇÃO: routers/services do Traefik precisam de nome ÚNICO por stack (aqui `demo`).
+# ATENÇÃO: o nome do router/service do Traefik é ÚNICO NO SERVIDOR INTEIRO, não por stack.
+# Aqui é `barbeariademo` e não `demo` porque já existe uma stack `demo` neste servidor — o nome
+# repetido faz o router ser descartado silenciosamente: o Traefik não cria a rota, não pede
+# certificado ao Let's Encrypt, e o navegador recebe o TRAEFIK DEFAULT CERT sem nenhum erro no log.
 #
 # Stack: barbearia_demo  →  serviço/container: barbearia_demo_app
 # Cuidado ao usar `docker ps -f name=barbearia`: esse filtro casa com a instância de PRODUÇÃO
@@ -43,10 +46,10 @@ services:
       labels:
         - "traefik.enable=true"
         - "traefik.docker.network=proxy"
-        - "traefik.http.routers.demo.rule=Host(`demobarbearia.jogasolucoes.com.br`)"
-        - "traefik.http.routers.demo.entrypoints=websecure"
-        - "traefik.http.routers.demo.tls.certresolver=le"
-        - "traefik.http.services.demo.loadbalancer.server.port=5000"
+        - "traefik.http.routers.barbeariademo.rule=Host(`demobarbearia.jogasolucoes.com.br`)"
+        - "traefik.http.routers.barbeariademo.entrypoints=websecure"
+        - "traefik.http.routers.barbeariademo.tls.certresolver=le"
+        - "traefik.http.services.barbeariademo.loadbalancer.server.port=5000"
 
 networks:
   proxy:
