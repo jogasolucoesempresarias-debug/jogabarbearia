@@ -27,7 +27,7 @@ services:
       SECRET_KEY: ${SECRET_KEY}          # PRÓPRIA — nunca repetir a de outra instância
       DB_HOST: postgres_postgres
       DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-joga_demo}
+      DB_NAME: ${DB_NAME:-barbearia_demo}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       MODO_DEMO: "1"
