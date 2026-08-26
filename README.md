@@ -270,12 +270,18 @@ $env:DB_NAME="joga_demo_local"; $env:MODO_DEMO="1"; $env:PORT="5006"
 não existir, ele **derruba o container antigo**, falha ao subir o novo e o serviço fica em **0/1**,
 fora do ar. Recuperação: `docker service update --rollback <serviço>`.
 
+> ⚠️ A tag usa o **sha COMPLETO de 40 caracteres** (`sha-${{ github.sha }}` no workflow), não o
+> curto de 7 que o `git log` mostra. `git rev-parse HEAD` dá o certo — com o curto, o `pull` falha
+> com "manifest unknown".
+
 ```bash
 # 1. confira a tag no GHCR (ou espere o check verde no Actions)
-sudo docker pull ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:sha-<commit>
+SHA=$(git rev-parse HEAD)      # ou cole o sha completo à mão
+sudo docker pull ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:sha-$SHA
 
 # 2. atualize a instância desejada — use o NOME COMPLETO do serviço
-sudo docker service update --image ghcr.io/.../jogabarbearia:sha-<commit> --force barbearia_barbearia-app
+sudo docker service update --image ghcr.io/jogasolucoesempresarias-debug/jogabarbearia:sha-$SHA \
+     --force barbearia_barbearia-app
 sudo docker exec $(sudo docker ps -q -f name=barbearia_barbearia) python -X utf8 init_db.py
 ```
 
