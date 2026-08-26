@@ -12,6 +12,7 @@ import threading
 import functools
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import date, datetime, time, timedelta
 
 import psycopg2
@@ -98,6 +99,58 @@ def cfg():
     return q_one("SELECT * FROM configuracoes WHERE id=1") or {}
 
 
+# ── Formas de pagamento e a taxa da maquininha ────────────────────────
+# A tabela `formas_pagamento` é a fonte da verdade (nome + taxa). O `configuracoes.formas_pagamento`
+# (JSONB) virou vestigial — o /api/config segue devolvendo a lista de NOMES derivada daqui porque
+# seis telas consomem aquele formato.
+TAXA_CATEGORIA = 'Taxas de cartão'
+
+
+def formas_ativas():
+    """Nomes das formas ativas, na ordem — o contrato que as telas esperam (array de strings)."""
+    return [r['nome'] for r in q_all(
+        "SELECT nome FROM formas_pagamento WHERE ativo ORDER BY ordem, nome")]
+
+
+def taxa_da_forma(forma):
+    """% da maquininha para uma forma. Desconhecida, inativa ou sem taxa → 0."""
+    if not forma:
+        return 0.0
+    row = q_one("SELECT taxa_pct FROM formas_pagamento WHERE nome=%s", (forma,))
+    return float(row['taxa_pct'] or 0) if row else 0.0
+
+
+def registrar_taxa(mov_id, valor_bruto, forma, data_mov=None):
+    """Lança a taxa da maquininha como despesa AMARRADA ao movimento de receita (ref_id=mov_id).
+
+    A receita continua BRUTA de propósito: a taxa é custo, não desconto no faturamento. Se fosse
+    abatida da receita, a comissão do barbeiro — que sai de comanda_itens.subtotal — mudaria
+    conforme a forma de pagamento que o CLIENTE escolheu. Ninguém decidiu isso.
+
+    Dinheiro/Pix (taxa 0) não geram lançamento nenhum. Idempotente: refazer substitui.
+    """
+    if not mov_id:
+        return None
+    execute("DELETE FROM movimentos WHERE origem='taxa' AND ref_id=%s", (mov_id,))
+    valor = round(float(valor_bruto or 0) * taxa_da_forma(forma) / 100.0, 2)
+    if valor <= 0:
+        return None
+    row = execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, categoria, valor,
+                       forma_pagamento, data, status, criado_por)
+                     VALUES ('despesa','taxa',%s,%s,%s,%s,%s,COALESCE(%s::date,CURRENT_DATE),'pago',%s)
+                     RETURNING id""",
+                  (mov_id, f"Taxa {forma}", TAXA_CATEGORIA, valor, forma, data_mov,
+                   session.get('user_id')), returning=True)
+    return row['id']
+
+
+def remover_taxas_de(mov_ids):
+    """Apaga as taxas filhas destes movimentos. Chamar SEMPRE antes de apagar os pais."""
+    ids = [i for i in (mov_ids or []) if i]
+    if ids:
+        execute("DELETE FROM movimentos WHERE origem='taxa' AND ref_id = ANY(%s)", (ids,))
+
+
 def telefone_existe(telefone, excluir_id=None):
     """True se já há cliente ativo com o mesmo telefone (comparando só os dígitos).
     excluir_id ignora o próprio cliente (usado na edição)."""
@@ -116,14 +169,21 @@ def telefone_existe(telefone, excluir_id=None):
 _RATE = {}
 
 
-def rate_limit_ok(ip, maximo=5, janela_seg=600):
+def rate_limit_ok(ip, maximo=5, janela_seg=600, consumir=True):
+    """consumir=False só CONSULTA a cota, sem gastar.
+
+    Gastar cota em tentativa que falhou pune quem errou o próprio telefone: oito typos e o
+    cliente real fica trancado 10 minutos. Onde a validação é longa, consulte primeiro e
+    consuma só quando a coisa foi de fato criada.
+    """
     import time
     agora = time.time()
     hist = [t for t in _RATE.get(ip, []) if agora - t < janela_seg]
     if len(hist) >= maximo:
         _RATE[ip] = hist
         return False
-    hist.append(agora)
+    if consumir:
+        hist.append(agora)
     _RATE[ip] = hist
     return True
 
@@ -193,6 +253,54 @@ def visita_coberta_no_dia(cliente_id, d, exclude_comanda_id=None):
           AND COALESCE(c.fechada_em::date, c.aberta_em::date) = %s
           AND (%s::int IS NULL OR c.id <> %s::int)""",
         (cliente_id, d, exclude_comanda_id, exclude_comanda_id)) or 0
+
+
+def _hm(t):
+    """'HH:MM[:SS]' (ou time já serializado) → minutos desde a meia-noite."""
+    h, m = str(t)[:5].split(':')
+    return int(h) * 60 + int(m)
+
+
+def slot_livre(prof_id, d: date, hora_inicio, slots, slot_min=None, excluir_id=None):
+    """(ok, motivo) para um agendamento de `slots` slots começando em hora_inicio.
+
+    Confere as três coisas que só a UI checava e o backend deixava passar: horário de
+    funcionamento, SOBREPOSIÇÃO de intervalo (não apenas o mesmo minuto de início) e bloqueio
+    do barbeiro. Comparar só `hora_inicio` deixa um serviço de 60min às 9h não impedir alguém
+    de marcar 9h30 — com uma porta pública, quem posta é um desconhecido e a agenda dobra.
+    """
+    c = cfg()
+    slot_min = slot_min or (c.get('slot_min') or 30)
+    ini = _hm(hora_inicio)
+    fim = ini + max(1, int(slots or 1)) * slot_min
+
+    dia_cfg = (c.get('horarios') or {}).get(str(js_weekday(d)))
+    if not dia_cfg or not dia_cfg.get('abre') or not dia_cfg.get('fecha'):
+        return (False, 'A barbearia não abre nesse dia.')
+    if ini < _hm(dia_cfg['abre']) or fim > _hm(dia_cfg['fecha']):
+        return (False, f"Fora do horário de funcionamento ({dia_cfg['abre']}–{dia_cfg['fecha']}).")
+
+    ags = q_all("""SELECT id, hora_inicio, duracao_slots FROM agendamentos
+                   WHERE profissional_id=%s AND data=%s AND status NOT IN ('cancelado')""", (prof_id, d))
+    bloqs = q_all("SELECT hora_inicio, hora_fim FROM bloqueios WHERE profissional_id=%s AND data=%s",
+                  (prof_id, d))
+    return _checa_intervalo(ini, fim, ags, bloqs, slot_min, excluir_id)
+
+
+def _checa_intervalo(ini, fim, ags, bloqs, slot_min, excluir_id=None):
+    """Núcleo da checagem, com as listas do dia JÁ carregadas — a grade de disponibilidade
+    percorre dezenas de slots e não pode bater no banco a cada um."""
+    for a in ags:
+        if excluir_id and a['id'] == excluir_id:
+            continue
+        a_ini = _hm(a['hora_inicio'])
+        a_fim = a_ini + max(1, a['duracao_slots'] or 1) * slot_min
+        if ini < a_fim and a_ini < fim:                      # [ini,fim) cruza [a_ini,a_fim)
+            return (False, 'Esse horário já está ocupado.')
+    for b in bloqs:
+        if ini < _hm(b['hora_fim']) and _hm(b['hora_inicio']) < fim:
+            return (False, 'O barbeiro não atende nesse horário.')
+    return (True, None)
 
 
 def cobertura_plano(cliente_id, servico_id, d: date, exclude_comanda_id=None):
@@ -286,6 +394,7 @@ PAGINAS = {
     '/caixa':       'caixa.html',
     '/despesas':    'despesas.html',
     '/relatorios':  'relatorios.html',
+    '/taxas':       'taxas.html',
     '/uso':         'uso.html',
     '/dre':         'dre.html',
     '/config':      'config.html',
@@ -361,6 +470,273 @@ def cadastro_publico():
         return jsonify({'ok': False, 'error': 'Este telefone já está cadastrado'}), 409
     execute("INSERT INTO clientes (nome, telefone, status, origem) VALUES (%s,%s,'pendente','qr')",
             (nome, telefone))
+    return jsonify({'ok': True})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Agendamento online — a segunda porta pública do sistema
+# ══════════════════════════════════════════════════════════════════════
+# O cliente marca sozinho por um link, sem app e sem conta: nome e telefone bastam. Depois ele
+# volta na mesma página, entra com nome + telefone e vê/cancela os próprios horários.
+#
+# REGRA DE OURO destas rotas: nunca devolver dado de OUTRO cliente. A disponibilidade responde
+# só livre/ocupado — o /api/agenda (que devolve nome de todo mundo do dia) é de uso interno e
+# NÃO pode ser reaproveitado aqui.
+def _norm_nome(s):
+    """MAIÚSCULO sem acento, p/ casar o nome digitado com o cadastrado sem implicância."""
+    import unicodedata
+    s = unicodedata.normalize('NFKD', str(s or '').strip().upper())
+    return ''.join(ch for ch in s if not unicodedata.combining(ch))
+
+
+def so_digitos(s):
+    return ''.join(ch for ch in str(s or '') if ch.isdigit())
+
+
+def agendamento_cfg():
+    c = cfg()
+    return {
+        'ligado': bool(c.get('agendamento_online')),
+        'confirmar_manual': bool(c.get('agendamento_confirmar_manual')),
+        'antecedencia_horas': int(c.get('agendamento_antecedencia_horas') or 0),
+        'janela_dias': int(c.get('agendamento_janela_dias') or 30),
+        'slot_min': c.get('slot_min') or 30,
+        'horarios': c.get('horarios') or {},
+        'marca_nome': c.get('marca_nome') or 'Barbearia',
+        'marca_endereco': c.get('marca_endereco') or '',
+    }
+
+
+def cliente_por_telefone(telefone):
+    d = so_digitos(telefone)
+    if not d:
+        return None
+    return q_one("""SELECT * FROM clientes WHERE ativo
+                    AND regexp_replace(telefone, '\\D', '', 'g') = %s ORDER BY id LIMIT 1""", (d,))
+
+
+def grade_do_dia(d: date, ac):
+    """Lista de horários ('HH:MM') que o dia oferece, do abre ao fecha. [] = fechado."""
+    dia = (ac['horarios'] or {}).get(str(js_weekday(d)))
+    if not dia or not dia.get('abre') or not dia.get('fecha'):
+        return []
+    ini, fim, step = _hm(dia['abre']), _hm(dia['fecha']), ac['slot_min']
+    return [f"{m // 60:02d}:{m % 60:02d}" for m in range(ini, fim, step)]
+
+
+def _servicos_validos(ids):
+    ids = [int(x) for x in (ids or []) if str(x).isdigit()]
+    return q_all("SELECT id, nome, preco, duracao_min FROM servicos WHERE ativo AND id = ANY(%s)",
+                 (ids,)) if ids else []
+
+
+@app.route('/agendar', methods=['GET'])
+def agendar_page():
+    if not agendamento_cfg()['ligado'] or MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Agendamento online indisponível'}), 404
+    return send_from_directory(BASE_DIR, 'agendar.html')
+
+
+@app.route('/api/agendar/contexto')
+def agendar_contexto():
+    """O que a página pública precisa pra montar o fluxo. Read-only, sem dado de cliente."""
+    ac = agendamento_cfg()
+    if not ac['ligado'] or MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Agendamento online indisponível'}), 404
+    hoje_ = date.today()
+    return jsonify({
+        'ok': True, 'marca_nome': ac['marca_nome'], 'endereco': ac['marca_endereco'],
+        'servicos': q_all("SELECT id, nome, preco, duracao_min FROM servicos WHERE ativo ORDER BY nome"),
+        'profissionais': q_all("SELECT id, nome FROM profissionais WHERE ativo AND aceita_online ORDER BY nome"),
+        'confirmar_manual': ac['confirmar_manual'],
+        'primeiro_dia': hoje_.isoformat(),
+        'ultimo_dia': (hoje_ + timedelta(days=ac['janela_dias'])).isoformat(),
+    })
+
+
+@app.route('/api/agendar/disponibilidade')
+def agendar_disponibilidade():
+    """Horários livres de um dia. Devolve SÓ horário + ids de barbeiro livres — nunca nome de
+    cliente, nunca o que já está marcado."""
+    ac = agendamento_cfg()
+    if not ac['ligado'] or MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Agendamento online indisponível'}), 404
+    d = parse_date(request.args.get('data'))
+    if not d:
+        return jsonify({'ok': False, 'error': 'Data inválida'}), 400
+    hoje_ = date.today()
+    if d < hoje_ or d > hoje_ + timedelta(days=ac['janela_dias']):
+        return jsonify({'ok': True, 'data': request.args.get('data'), 'slots': [], 'fechado': False,
+                        'fora_da_janela': True})
+
+    servs = _servicos_validos((request.args.get('servicos_ids') or '').split(','))
+    dur = sum((s['duracao_min'] or 30) for s in servs) or 30
+    slots_n = max(1, math.ceil(dur / ac['slot_min']))
+
+    profs = q_all("SELECT id, nome FROM profissionais WHERE ativo AND aceita_online ORDER BY nome")
+    pedido = request.args.get('profissional_id')
+    if pedido and str(pedido).isdigit():
+        profs = [p for p in profs if p['id'] == int(pedido)]
+
+    grade = grade_do_dia(d, ac)
+    if not grade or not profs:
+        return jsonify({'ok': True, 'data': d.isoformat(), 'slots': [], 'fechado': not grade})
+
+    # Carrega o dia UMA vez por barbeiro (a grade tem dezenas de slots)
+    ags = {p['id']: q_all("""SELECT id, hora_inicio, duracao_slots FROM agendamentos
+                             WHERE profissional_id=%s AND data=%s AND status NOT IN ('cancelado')""",
+                          (p['id'], d)) for p in profs}
+    bloqs = {p['id']: q_all("SELECT hora_inicio, hora_fim FROM bloqueios WHERE profissional_id=%s AND data=%s",
+                            (p['id'], d)) for p in profs}
+
+    fecha = _hm((ac['horarios'] or {}).get(str(js_weekday(d)))['fecha'])
+    limite = None
+    if d == hoje_:                                   # antecedência mínima só morde hoje
+        agora = datetime.now()
+        limite = agora.hour * 60 + agora.minute + ac['antecedencia_horas'] * 60
+
+    saida = []
+    for hora in grade:
+        ini = _hm(hora)
+        fim = ini + slots_n * ac['slot_min']
+        if fim > fecha:
+            continue
+        if limite is not None and ini < limite:
+            continue
+        livres = [p['id'] for p in profs
+                  if _checa_intervalo(ini, fim, ags[p['id']], bloqs[p['id']], ac['slot_min'])[0]]
+        if livres:
+            saida.append({'hora': hora, 'profissionais': livres})
+    return jsonify({'ok': True, 'data': d.isoformat(), 'slots': saida, 'fechado': False,
+                    'duracao_min': dur})
+
+
+@app.route('/api/agendar', methods=['POST'])
+def agendar_criar():
+    ac = agendamento_cfg()
+    if not ac['ligado'] or MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Agendamento online indisponível'}), 404
+    d = request.get_json() or {}
+    if (d.get('empresa') or '').strip():             # honeypot: bot preencheu → finge que deu certo
+        return jsonify({'ok': True, 'id': None})
+    # Só CONSULTA aqui: a cota é gasta lá embaixo, quando o agendamento nasce de verdade.
+    ip = request.remote_addr or 'desconhecido'
+    if not rate_limit_ok(ip, maximo=8, janela_seg=600, consumir=False):
+        return jsonify({'ok': False, 'error': 'Muitos agendamentos deste aparelho. Tente de novo '
+                                              'em alguns minutos ou fale com a gente.'}), 429
+
+    nome = (d.get('nome') or '').strip().upper()
+    telefone = (d.get('telefone') or '').strip()
+    if not nome:
+        return jsonify({'ok': False, 'error': 'Informe seu nome'}), 400
+    if len(so_digitos(telefone)) < 10:
+        return jsonify({'ok': False, 'error': 'Informe um telefone válido com DDD'}), 400
+
+    servs = _servicos_validos(d.get('servicos_ids'))
+    if not servs:
+        return jsonify({'ok': False, 'error': 'Escolha pelo menos um serviço'}), 400
+    data = parse_date(d.get('data'))
+    hora = (d.get('hora_inicio') or '').strip()
+    if not data or not hora:
+        return jsonify({'ok': False, 'error': 'Escolha o dia e o horário'}), 400
+
+    hoje_ = date.today()
+    if data < hoje_:
+        return jsonify({'ok': False, 'error': 'Essa data já passou.'}), 400
+    if data > hoje_ + timedelta(days=ac['janela_dias']):
+        return jsonify({'ok': False, 'error': f"Só dá pra agendar até {ac['janela_dias']} dias à frente."}), 400
+    if data == hoje_:
+        agora = datetime.now()
+        if _hm(hora) < agora.hour * 60 + agora.minute + ac['antecedencia_horas'] * 60:
+            return jsonify({'ok': False, 'error': f"Agende com pelo menos {ac['antecedencia_horas']}h de antecedência."}), 400
+
+    dur = sum((s['duracao_min'] or 30) for s in servs) or 30
+    slots_n = max(1, math.ceil(dur / ac['slot_min']))
+
+    # Barbeiro escolhido, ou o primeiro livre ("tanto faz")
+    candidatos = q_all("SELECT id FROM profissionais WHERE ativo AND aceita_online ORDER BY nome")
+    if d.get('profissional_id'):
+        candidatos = [p for p in candidatos if p['id'] == int(d['profissional_id'])]
+    prof = next((p['id'] for p in candidatos if slot_livre(p['id'], data, hora, slots_n, ac['slot_min'])[0]), None)
+    if not prof:
+        return jsonify({'ok': False, 'error': 'Esse horário acabou de ser ocupado. Escolha outro.'}), 409
+
+    cli = cliente_por_telefone(telefone)
+    if not cli:
+        cli = execute("""INSERT INTO clientes (nome, telefone, status, origem)
+                         VALUES (%s,%s,'aprovado','online') RETURNING *""", (nome, telefone), returning=True)
+
+    # Uma marcação futura em aberto por telefone: trava de spam que não atrapalha cliente real
+    abertos = scalar("""SELECT COUNT(*) FROM agendamentos
+                        WHERE cliente_id=%s AND status IN ('pendente','agendado') AND data >= CURRENT_DATE""",
+                     (cli['id'],)) or 0
+    if abertos >= 1:
+        return jsonify({'ok': False, 'error': 'Você já tem um horário marcado. Cancele o atual antes '
+                                              'de marcar outro, ou fale com a gente.'}), 409
+
+    rate_limit_ok(ip, maximo=8, janela_seg=600)      # agora sim: cota gasta por agendamento criado
+    status = 'pendente' if ac['confirmar_manual'] else 'agendado'
+    row = execute("""INSERT INTO agendamentos (profissional_id, cliente_id, servico_id, servicos_ids,
+                       data, hora_inicio, duracao_slots, status, origem, observacao)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'online',%s) RETURNING id""",
+                  (prof, cli['id'], servs[0]['id'], Json([s['id'] for s in servs]), data, hora,
+                   slots_n, status, (d.get('observacao') or '').strip() or None), returning=True)
+    return jsonify({'ok': True, 'id': row['id'], 'status': status,
+                    'confirmar_manual': ac['confirmar_manual']})
+
+
+def _meus_agendamentos(cli_id):
+    return q_all("""SELECT a.id, a.data, a.hora_inicio, a.status, a.servicos_ids,
+                      p.nome AS barbeiro
+                    FROM agendamentos a LEFT JOIN profissionais p ON p.id=a.profissional_id
+                    WHERE a.cliente_id=%s AND a.data >= CURRENT_DATE
+                      AND a.status IN ('pendente','agendado')
+                    ORDER BY a.data, a.hora_inicio""", (cli_id,))
+
+
+def _identifica(d):
+    """(cliente, erro). Nome + telefone tem que bater — os dois. É o 'login' do cliente."""
+    cli = cliente_por_telefone(d.get('telefone'))
+    if not cli or _norm_nome(cli['nome']) != _norm_nome(d.get('nome')):
+        return None, 'Não encontramos nenhum horário com esse nome e telefone.'
+    return cli, None
+
+
+@app.route('/api/agendar/meus', methods=['POST'])
+def agendar_meus():
+    """O cliente acessa os PRÓPRIOS horários com nome + telefone. É o link que vai na mensagem."""
+    ac = agendamento_cfg()
+    if not ac['ligado'] or MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Agendamento online indisponível'}), 404
+    if not rate_limit_ok('meus:' + (request.remote_addr or '?'), maximo=15, janela_seg=600):
+        return jsonify({'ok': False, 'error': 'Muitas tentativas. Tente de novo em alguns minutos.'}), 429
+    d = request.get_json() or {}
+    cli, erro = _identifica(d)
+    if erro:
+        return jsonify({'ok': False, 'error': erro}), 404
+    smap = {s['id']: s['nome'] for s in q_all("SELECT id, nome FROM servicos")}
+    rows = []
+    for a in _meus_agendamentos(cli['id']):
+        rows.append({**a, 'servicos': [smap[i] for i in (a.get('servicos_ids') or []) if i in smap]})
+    return jsonify({'ok': True, 'nome': cli['nome'], 'rows': rows})
+
+
+@app.route('/api/agendar/cancelar', methods=['POST'])
+def agendar_cancelar():
+    ac = agendamento_cfg()
+    if not ac['ligado'] or MODO_COLETA:
+        return jsonify({'ok': False, 'error': 'Agendamento online indisponível'}), 404
+    d = request.get_json() or {}
+    cli, erro = _identifica(d)
+    if erro:
+        return jsonify({'ok': False, 'error': erro}), 404
+    aid = d.get('agendamento_id')
+    # O WHERE amarra no cliente: não dá pra cancelar horário de terceiro trocando o id na mão.
+    alvo = q_one("""SELECT id FROM agendamentos WHERE id=%s AND cliente_id=%s
+                    AND status IN ('pendente','agendado') AND data >= CURRENT_DATE""", (aid, cli['id']))
+    if not alvo:
+        return jsonify({'ok': False, 'error': 'Horário não encontrado.'}), 404
+    execute("UPDATE agendamentos SET status='cancelado' WHERE id=%s", (alvo['id'],))
     return jsonify({'ok': True})
 
 
@@ -600,7 +976,8 @@ def setup_exportar():
         'horarios': c.get('horarios') or PRESET_FICHA['horarios'],
         'vende_plano': bool(planos), 'planos': planos,
         'comissao_padrao': c.get('comissao_padrao') or 45,
-        'formas_pagamento': c.get('formas_pagamento') or ['Dinheiro', 'Pix', 'Cartão'],
+        # nomes, sem a taxa: a taxa é de cada barbearia (a maquininha é dela), não se copia junto
+        'formas_pagamento': formas_ativas() or ['Dinheiro', 'Pix', 'Cartão'],
     }})
 
 
@@ -700,12 +1077,24 @@ def setup_aplicar():
                                        VALUES (%s,%s) ON CONFLICT DO NOTHING""",
                                     (plano_id, serv_id[nome_s]))
 
+        # Formas de pagamento vão pra tabela (fonte da verdade), com taxa 0 — a barbearia não sabe
+        # a taxa da maquininha dela na hora da negociação; a JOGA preenche depois no Config.
+        for i, nome_f in enumerate(d.get('formas_pagamento') or []):
+            nome_f = (nome_f or '').strip()
+            if nome_f:
+                cur.execute("""INSERT INTO formas_pagamento (nome, taxa_pct, ordem)
+                               VALUES (%s,0,%s) ON CONFLICT (nome) DO NOTHING""", (nome_f, i))
+
+        barb = d.get('barbearia') or {}
         cur.execute("""UPDATE configuracoes SET marca_nome=COALESCE(%s,marca_nome),
-                         horarios=COALESCE(%s,horarios), formas_pagamento=COALESCE(%s,formas_pagamento),
+                         horarios=COALESCE(%s,horarios),
+                         marca_endereco=COALESCE(%s,marca_endereco),
+                         marca_whatsapp=COALESCE(%s,marca_whatsapp),
                          comissao_padrao=COALESCE(%s,comissao_padrao) WHERE id=1""",
-                    ((d.get('barbearia') or {}).get('nome') or None,
+                    (barb.get('nome') or None,
                      Json(d['horarios']) if d.get('horarios') else None,
-                     Json(d['formas_pagamento']) if d.get('formas_pagamento') else None,
+                     (barb.get('endereco') or '').strip() or None,
+                     (barb.get('whatsapp') or '').strip() or None,
                      d.get('comissao_padrao')))
         cur.execute("""UPDATE setup_coleta SET dados=%s, status='aplicada', aplicada_em=NOW(),
                        token=NULL, atualizada_em=NOW() WHERE id=1""", (Json(d),))
@@ -843,8 +1232,10 @@ def prof_create():
 def prof_update(pid):
     d = request.get_json() or {}
     execute("""UPDATE profissionais SET nome=COALESCE(%s,nome), comissao_pct=COALESCE(%s,comissao_pct),
-               cor_agenda=COALESCE(%s,cor_agenda), recebe_comissao=COALESCE(%s,recebe_comissao) WHERE id=%s""",
-            (d.get('nome'), d.get('comissao_pct'), d.get('cor_agenda'), d.get('recebe_comissao'), pid))
+               cor_agenda=COALESCE(%s,cor_agenda), recebe_comissao=COALESCE(%s,recebe_comissao),
+               aceita_online=COALESCE(%s,aceita_online) WHERE id=%s""",
+            (d.get('nome'), d.get('comissao_pct'), d.get('cor_agenda'), d.get('recebe_comissao'),
+             d.get('aceita_online'), pid))
     return jsonify({'ok': True})
 
 
@@ -1111,7 +1502,61 @@ def plano_update(pid):
 @app.route('/api/config', methods=['GET'])
 @login_required
 def config_get():
-    return jsonify({'ok': True, 'config': cfg()})
+    # CONTRATO: formas_pagamento sai daqui como ARRAY DE NOMES, igual sempre foi — comanda,
+    # despesas, assinaturas, config e a ficha de coleta consomem esse formato. A fonte da verdade
+    # passou a ser a tabela formas_pagamento (que tem a taxa); o JSONB da configuracoes ficou
+    # vestigial. Quem precisa da taxa usa /api/formas-pagamento.
+    c = cfg()
+    c['formas_pagamento'] = formas_ativas()
+    return jsonify({'ok': True, 'config': c})
+
+
+# ── Formas de pagamento (nome + taxa da maquininha) ───────────────────
+@app.route('/api/formas-pagamento', methods=['GET'])
+@login_required
+def forma_list():
+    return jsonify({'ok': True, 'rows': q_all(
+        "SELECT * FROM formas_pagamento ORDER BY ordem, nome")})
+
+
+@app.route('/api/formas-pagamento', methods=['POST'])
+@login_required
+@role_required('dono')
+def forma_create():
+    d = request.get_json() or {}
+    nome = (d.get('nome') or '').strip()
+    if not nome:
+        return jsonify({'ok': False, 'error': 'Nome obrigatório'}), 400
+    if scalar("SELECT 1 FROM formas_pagamento WHERE lower(nome)=lower(%s)", (nome,)):
+        return jsonify({'ok': False, 'error': 'Já existe uma forma com esse nome'}), 409
+    ordem = d.get('ordem')
+    if ordem is None:
+        ordem = (scalar("SELECT COALESCE(MAX(ordem),0)+1 FROM formas_pagamento") or 0)
+    row = execute("INSERT INTO formas_pagamento (nome, taxa_pct, ordem) VALUES (%s,%s,%s) RETURNING *",
+                  (nome, d.get('taxa_pct') or 0, ordem), returning=True)
+    return jsonify({'ok': True, 'row': row})
+
+
+@app.route('/api/formas-pagamento/<int:fid>', methods=['PUT'])
+@login_required
+@role_required('dono')
+def forma_update(fid):
+    """Só taxa/ativo/ordem. O NOME não muda: ele é a chave gravada no histórico de movimentos e
+    comandas — renomear aqui deixaria os lançamentos antigos órfãos da taxa deles."""
+    d = request.get_json() or {}
+    execute("""UPDATE formas_pagamento SET taxa_pct=COALESCE(%s,taxa_pct),
+               ativo=COALESCE(%s,ativo), ordem=COALESCE(%s,ordem) WHERE id=%s""",
+            (d.get('taxa_pct'), d.get('ativo'), d.get('ordem'), fid))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/formas-pagamento/<int:fid>', methods=['DELETE'])
+@login_required
+@role_required('dono')
+def forma_delete(fid):
+    """Desativa (não apaga): o nome segue vivo no histórico de movimentos e comandas."""
+    execute("UPDATE formas_pagamento SET ativo=false WHERE id=%s", (fid,))
+    return jsonify({'ok': True})
 
 
 @app.route('/api/config', methods=['PUT'])
@@ -1119,17 +1564,26 @@ def config_get():
 @role_required('dono')
 def config_update():
     d = request.get_json() or {}
+    # formas_pagamento NÃO é gravada aqui: a tabela formas_pagamento é a fonte da verdade e tem a
+    # taxa. Duas fontes pra mesma coisa seria bug garantido — use /api/formas-pagamento.
     execute("""UPDATE configuracoes SET
                  slot_min=COALESCE(%s,slot_min), comissao_padrao=COALESCE(%s,comissao_padrao),
-                 formas_pagamento=COALESCE(%s,formas_pagamento), horarios=COALESCE(%s,horarios),
+                 horarios=COALESCE(%s,horarios),
                  categorias_despesa=COALESCE(%s,categorias_despesa),
-                 marca_nome=COALESCE(%s,marca_nome), marca_logo_url=%s
+                 marca_nome=COALESCE(%s,marca_nome), marca_logo_url=%s,
+                 marca_endereco=COALESCE(%s,marca_endereco), marca_whatsapp=COALESCE(%s,marca_whatsapp),
+                 agendamento_online=COALESCE(%s,agendamento_online),
+                 agendamento_confirmar_manual=COALESCE(%s,agendamento_confirmar_manual),
+                 agendamento_antecedencia_horas=COALESCE(%s,agendamento_antecedencia_horas),
+                 agendamento_janela_dias=COALESCE(%s,agendamento_janela_dias)
                WHERE id=1""",
             (d.get('slot_min'), d.get('comissao_padrao'),
-             Json(d['formas_pagamento']) if d.get('formas_pagamento') is not None else None,
              Json(d['horarios']) if d.get('horarios') is not None else None,
              Json(d['categorias_despesa']) if d.get('categorias_despesa') is not None else None,
-             d.get('marca_nome'), d.get('marca_logo_url')))
+             d.get('marca_nome'), d.get('marca_logo_url'),
+             d.get('marca_endereco'), d.get('marca_whatsapp'),
+             d.get('agendamento_online'), d.get('agendamento_confirmar_manual'),
+             d.get('agendamento_antecedencia_horas'), d.get('agendamento_janela_dias')))
     return jsonify({'ok': True})
 
 
@@ -1206,10 +1660,9 @@ def agend_create():
         dur = sum((r['duracao_min'] or 30) for r in rows) or 30
     slots = max(1, math.ceil(dur / slot_min))
     principal = serv_ids[0] if serv_ids else None
-    conflito = scalar("""SELECT COUNT(*) FROM agendamentos WHERE profissional_id=%s AND data=%s
-                         AND hora_inicio=%s AND status NOT IN ('cancelado')""", (prof, data, hora))
-    if conflito:
-        return jsonify({'ok': False, 'error': 'Já existe agendamento nesse horário'}), 409
+    ok, motivo = slot_livre(prof, data, hora, slots, slot_min)
+    if not ok:
+        return jsonify({'ok': False, 'error': motivo}), 409
     row = execute("""INSERT INTO agendamentos (profissional_id, cliente_id, servico_id, servicos_ids,
                      data, hora_inicio, duracao_slots, origem, observacao, criado_por)
                      VALUES (%s,%s,%s,%s,%s,%s,%s,'agenda',%s,%s) RETURNING id""",
@@ -1251,6 +1704,133 @@ def bloqueio_create():
 @login_required
 def bloqueio_delete(bid):
     execute("DELETE FROM bloqueios WHERE id=%s", (bid,))
+    return jsonify({'ok': True})
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Fila de mensagens de WhatsApp (envio MANUAL, pelo aparelho da barbearia)
+# ══════════════════════════════════════════════════════════════════════
+# Nada é disparado automaticamente. O sistema monta o texto e devolve um link wa.me; a barbearia
+# toca, o WhatsApp DELA abre com a mensagem pronta e ela envia. Assim:
+#   · a mensagem sai do número real da barbearia (o cliente reconhece e responde ali)
+#   · não existe instância de WhatsApp por cliente pra conectar, pagar e reconectar
+#   · não há risco de bloqueio por disparo em massa
+#
+# A FILA É UMA CONSULTA (as duas colunas de timestamp nulas) — por isso não há cron nem agendador.
+#
+# O canal UazAPI (alerta_whatsapp) NÃO é usado aqui: aquilo é o aviso interno da JOGA.
+MENSAGEM_TIPOS = ('aceite', 'lembrete')
+
+
+def wa_numero(telefone):
+    """Número para link wa.me: 55 + DDD + número CHEIO (com o 9).
+
+    NÃO usar normalizar_telefone_br: ela REMOVE o 9º dígito porque esse é o canônico da UazAPI.
+    Aqui o 9 tem que ficar, senão o link abre uma conversa que não existe.
+    """
+    n = so_digitos(telefone)
+    if len(n) < 10:
+        return None
+    if not n.startswith('55'):
+        n = '55' + n
+    return n
+
+
+def _primeiro_nome(nome):
+    return (str(nome or '').strip().split(' ')[0] or 'tudo bem').title()
+
+
+def _texto_mensagem(tipo, ag, marca, endereco, base_url):
+    d = parse_date(ag['data'])
+    dia = f"{DIAS_SEMANA_PT[js_weekday(d)]}, {d.strftime('%d/%m')}" if d else ''
+    hora = str(ag['hora_inicio'])[:5]
+    servs = ', '.join(ag.get('servicos') or []) or 'atendimento'
+    link = f"{base_url}/agendar"
+    # SEM EMOJI de propósito. O link wa.me sai em UTF-8 correto, mas quando o Windows repassa a
+    # URL pro WhatsApp Desktop ele converte pra codepage ANSI: acento sobrevive (existe em
+    # Latin-1), emoji não — chega como "?" no cliente da barbearia. Não dá pra controlar o
+    # aplicativo do outro lado, então a mensagem tem que ser legível em texto puro.
+    if tipo == 'aceite':
+        corpo = (f"Oi, {_primeiro_nome(ag['cliente_nome'])}! Seu horário na *{marca}* está confirmado.\n\n"
+                 f"*{dia.capitalize()}, às {hora}*\n{servs}\nCom {ag.get('barbeiro') or 'a equipe'}\n")
+        if endereco:
+            corpo += f"{endereco}\n"
+        return corpo + f"\nPrecisando cancelar ou remarcar, é por aqui:\n{link}"
+    return (f"Oi, {_primeiro_nome(ag['cliente_nome'])}! Passando pra confirmar seu horário "
+            f"de amanhã na *{marca}*.\n\n*{dia.capitalize()}, às {hora}*\n{servs}\n\n"
+            f"Consegue confirmar pra mim? Se precisar remarcar:\n{link}")
+
+
+DIAS_SEMANA_PT = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado']
+
+
+@app.route('/api/mensagens/pendentes')
+@login_required
+def mensagens_pendentes():
+    """Duas filas: avisar quem foi aceito, e confirmar quem vem amanhã.
+
+    `aceite` só vale pra agendamento online — é quem está esperando resposta. O `lembrete` vale
+    pra todo mundo de amanhã, tenha vindo do link ou do balcão.
+    """
+    c = cfg()
+    marca = c.get('marca_nome') or 'Barbearia'
+    endereco = c.get('marca_endereco') or ''
+    base = request.url_root.rstrip('/')
+    smap = {s['id']: s['nome'] for s in q_all("SELECT id, nome FROM servicos")}
+
+    def montar(tipo, rows):
+        out = []
+        for a in rows:
+            a = dict(a)
+            a['servicos'] = [smap[i] for i in (a.get('servicos_ids') or []) if i in smap]
+            numero = wa_numero(a.get('telefone'))
+            texto = _texto_mensagem(tipo, a, marca, endereco, base)
+            out.append({
+                'tipo': tipo, 'agendamento_id': a['id'], 'cliente_nome': a['cliente_nome'],
+                'telefone': a.get('telefone'), 'data': a['data'], 'hora': str(a['hora_inicio'])[:5],
+                'barbeiro': a.get('barbeiro'), 'servicos': a['servicos'], 'texto': texto,
+                # safe='' força codificar a '/' também: o texto tem o link /agendar dentro e
+                # deixar barra crua no query string é pedir pra algum cliente truncar a mensagem.
+                'wa_url': (f"https://wa.me/{numero}?text={urllib.parse.quote(texto, safe='')}"
+                           if numero else None),
+                'sem_telefone': numero is None,
+            })
+        return out
+
+    aceites = q_all("""SELECT a.id, a.data, a.hora_inicio, a.servicos_ids, c.nome AS cliente_nome,
+                         c.telefone, p.nome AS barbeiro
+                       FROM agendamentos a
+                       JOIN clientes c ON c.id=a.cliente_id
+                       LEFT JOIN profissionais p ON p.id=a.profissional_id
+                       WHERE a.origem='online' AND a.status='agendado'
+                         AND a.confirmacao_enviada_em IS NULL AND a.data >= CURRENT_DATE
+                       ORDER BY a.data, a.hora_inicio""")
+    lembretes = q_all("""SELECT a.id, a.data, a.hora_inicio, a.servicos_ids, c.nome AS cliente_nome,
+                           c.telefone, p.nome AS barbeiro
+                         FROM agendamentos a
+                         JOIN clientes c ON c.id=a.cliente_id
+                         LEFT JOIN profissionais p ON p.id=a.profissional_id
+                         WHERE a.status='agendado' AND a.lembrete_enviado_em IS NULL
+                           AND a.data = CURRENT_DATE + 1
+                         ORDER BY a.hora_inicio""")
+    a_rows, l_rows = montar('aceite', aceites), montar('lembrete', lembretes)
+    return jsonify({'ok': True, 'aceites': a_rows, 'lembretes': l_rows,
+                    'total': len(a_rows) + len(l_rows)})
+
+
+@app.route('/api/mensagens/<tipo>/<int:aid>/enviado', methods=['POST', 'DELETE'])
+@login_required
+def mensagem_marcar(tipo, aid):
+    """Carimba (ou desfaz) o envio.
+
+    O sistema NÃO sabe se ela apertou enviar no WhatsApp — o wa.me não devolve nada. Marcamos no
+    clique e deixamos o desfazer à mão. Melhor assumir isso do que exibir um "entregue" falso.
+    """
+    if tipo not in MENSAGEM_TIPOS:
+        return jsonify({'ok': False, 'error': 'Tipo inválido'}), 400
+    col = 'confirmacao_enviada_em' if tipo == 'aceite' else 'lembrete_enviado_em'
+    valor = 'NOW()' if request.method == 'POST' else 'NULL'
+    execute(f"UPDATE agendamentos SET {col} = {valor} WHERE id=%s", (aid,))
     return jsonify({'ok': True})
 
 
@@ -1409,9 +1989,10 @@ def comanda_fechar(cid):
     total = _recalc_comanda(cid)
     execute("UPDATE comandas SET status='fechada', forma_pagamento=%s, fechada_em=NOW() WHERE id=%s", (forma, cid))
     if total > 0:
-        execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, forma_pagamento, status, criado_por)
-                   VALUES ('receita','comanda',%s,%s,%s,%s,'pago',%s)""",
-                (cid, f"Comanda #{cid}", total, forma, session['user_id']))
+        mov = execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, forma_pagamento, status, criado_por)
+                   VALUES ('receita','comanda',%s,%s,%s,%s,'pago',%s) RETURNING id""",
+                      (cid, f"Comanda #{cid}", total, forma, session['user_id']), returning=True)
+        registrar_taxa(mov['id'], total, forma)
     if com['agendamento_id']:
         execute("UPDATE agendamentos SET status='atendido' WHERE id=%s", (com['agendamento_id'],))
     return jsonify({'ok': True, 'valor_total': total})
@@ -1426,6 +2007,9 @@ def comanda_cancelar(cid):
     if not com or com['status'] == 'cancelada':
         return jsonify({'ok': True})
     if com['status'] == 'fechada':
+        # A taxa é filha do movimento de receita: sai antes, senão vira despesa órfã no caixa.
+        remover_taxas_de([r['id'] for r in q_all(
+            "SELECT id FROM movimentos WHERE origem='comanda' AND ref_id=%s", (cid,))])
         execute("DELETE FROM movimentos WHERE origem='comanda' AND ref_id=%s", (cid,))
         if com['agendamento_id']:
             execute("UPDATE agendamentos SET status='agendado' WHERE id=%s", (com['agendamento_id'],))
@@ -1477,10 +2061,11 @@ def assin_create():
                   (d['cliente_id'], d['plano_id'], venc, proxima), returning=True)
     # 1ª mensalidade cobrada na hora → cai no caixa hoje
     if d.get('receber_agora', True) and pl:
-        execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, forma_pagamento, data, status, criado_por)
-                   VALUES ('receita','assinatura',%s,%s,%s,%s,CURRENT_DATE,'pago',%s)""",
-                (row['id'], f"Assinatura {cli['nome'] if cli else ''} — 1ª mensalidade",
-                 pl['valor_mensal'], d.get('forma_pagamento'), session['user_id']))
+        mov = execute("""INSERT INTO movimentos (tipo, origem, ref_id, descricao, valor, forma_pagamento, data, status, criado_por)
+                   VALUES ('receita','assinatura',%s,%s,%s,%s,CURRENT_DATE,'pago',%s) RETURNING id""",
+                      (row['id'], f"Assinatura {cli['nome'] if cli else ''} — 1ª mensalidade",
+                       pl['valor_mensal'], d.get('forma_pagamento'), session['user_id']), returning=True)
+        registrar_taxa(mov['id'], pl['valor_mensal'], d.get('forma_pagamento'))
     return jsonify({'ok': True, 'id': row['id'], 'proxima_cobranca': proxima.isoformat()})
 
 
@@ -1495,6 +2080,8 @@ def assin_update(aid):
         # + as cobranças futuras previstas). O "desfazer" da assinatura mora aqui, na origem —
         # no Caixa só se exclui o que é manual.
         if d['status'] == 'cancelada':
+            remover_taxas_de([r['id'] for r in q_all(
+                "SELECT id FROM movimentos WHERE origem='assinatura' AND ref_id=%s", (aid,))])
             execute("DELETE FROM movimentos WHERE origem='assinatura' AND ref_id=%s", (aid,))
     return jsonify({'ok': True})
 
@@ -1732,10 +2319,14 @@ def mov_create():
     d = request.get_json() or {}
     if d.get('tipo') not in ('receita', 'despesa') or not (d.get('descricao') or '').strip():
         return jsonify({'ok': False, 'error': 'Tipo e descrição obrigatórios'}), 400
-    execute("""INSERT INTO movimentos (tipo, origem, descricao, categoria, valor, forma_pagamento, data, status, criado_por)
-               VALUES (%s,'manual',%s,%s,%s,%s,%s,'pago',%s)""",
-            (d['tipo'], d['descricao'].strip(), d.get('categoria'), d.get('valor') or 0, d.get('forma_pagamento'),
-             parse_date(d.get('data'), date.today()), session['user_id']))
+    data_mov = parse_date(d.get('data'), date.today())
+    mov = execute("""INSERT INTO movimentos (tipo, origem, descricao, categoria, valor, forma_pagamento, data, status, criado_por)
+               VALUES (%s,'manual',%s,%s,%s,%s,%s,'pago',%s) RETURNING id""",
+                  (d['tipo'], d['descricao'].strip(), d.get('categoria'), d.get('valor') or 0,
+                   d.get('forma_pagamento'), data_mov, session['user_id']), returning=True)
+    # Só receita paga taxa — despesa lançada "no cartão" é dinheiro saindo, não entrando.
+    if d['tipo'] == 'receita':
+        registrar_taxa(mov['id'], d.get('valor') or 0, d.get('forma_pagamento'), data_mov)
     return jsonify({'ok': True})
 
 
@@ -1751,6 +2342,7 @@ def mov_delete(mid):
         return jsonify({'ok': True})
     if m['origem'] == 'comanda' and m['ref_id']:
         execute("UPDATE comandas SET status='cancelada' WHERE id=%s", (m['ref_id'],))
+    remover_taxas_de([mid])                     # a taxa da maquininha sai junto com a receita
     execute("DELETE FROM comissoes_pagas WHERE movimento_id=%s", (mid,))
     execute("DELETE FROM movimentos WHERE id=%s", (mid,))
     return jsonify({'ok': True})
@@ -1759,9 +2351,14 @@ def mov_delete(mid):
 @app.route('/api/movimentos/<int:mid>/pagar', methods=['POST'])
 @login_required
 def mov_pagar(mid):
+    """Marca um 'previsto' como pago. É AQUI que a mensalidade da assinatura ganha forma de
+    pagamento — e portanto onde a taxa da maquininha nasce pra ela."""
     d = request.get_json() or {}
     execute("UPDATE movimentos SET status='pago', forma_pagamento=COALESCE(%s,forma_pagamento), data=CURRENT_DATE WHERE id=%s",
             (d.get('forma_pagamento'), mid))
+    m = q_one("SELECT tipo, valor, forma_pagamento, data FROM movimentos WHERE id=%s", (mid,))
+    if m and m['tipo'] == 'receita':
+        registrar_taxa(mid, m['valor'], m['forma_pagamento'], m['data'])
     return jsonify({'ok': True})
 
 
@@ -1854,9 +2451,61 @@ def caixa_fechamento():
     total_receita = scalar("SELECT COALESCE(SUM(valor),0) FROM movimentos WHERE tipo='receita' AND status='pago' AND data=%s", (d,)) or 0
     total_despesa = scalar("SELECT COALESCE(SUM(valor),0) FROM movimentos WHERE tipo='despesa' AND status='pago' AND data=%s", (d,)) or 0
     atendimentos = scalar("SELECT COUNT(*) FROM comandas WHERE status='fechada' AND fechada_em::date=%s", (d,)) or 0
+
+    # Taxa da maquininha do dia. Já está dentro de total_despesa (é despesa paga) — o que falta é
+    # ela aparecer separada, senão o custo do cartão fica diluído no meio do aluguel.
+    taxa_por_forma = {r['forma']: float(r['total']) for r in q_all(
+        """SELECT COALESCE(forma_pagamento,'—') AS forma, COALESCE(SUM(valor),0) AS total
+           FROM movimentos WHERE origem='taxa' AND status='pago' AND data=%s
+           GROUP BY forma_pagamento""", (d,))}
+    for f in por_forma:
+        f['taxa'] = round(taxa_por_forma.get(f['forma'], 0), 2)
+        f['liquido'] = round(float(f['total']) - f['taxa'], 2)
+    total_taxas = round(sum(taxa_por_forma.values()), 2)
+
     return jsonify({'ok': True, 'data': d.isoformat(), 'por_forma': por_forma,
                     'total_receita': round(total_receita, 2), 'total_despesa': round(total_despesa, 2),
+                    'total_taxas': total_taxas, 'liquido': round(total_receita - total_taxas, 2),
                     'saldo': round(total_receita - total_despesa, 2), 'atendimentos': atendimentos})
+
+
+@app.route('/api/relatorios/taxas')
+@login_required
+def rel_taxas():
+    """Custo da maquininha no período, por forma de pagamento: bruto, taxa e líquido.
+
+    O % efetivo é calculado do realizado (taxa/bruto), não da configuração — se a taxa mudou no
+    meio do período, o que vale é o que foi lançado na época, não o número de hoje.
+    """
+    de = parse_date(request.args.get('de'), date.today().replace(day=1))
+    ate = parse_date(request.args.get('ate'), date.today())
+
+    bruto = {r['forma']: r for r in q_all(
+        """SELECT COALESCE(forma_pagamento,'—') AS forma, COALESCE(SUM(valor),0) AS total, COUNT(*) AS qtd
+           FROM movimentos WHERE tipo='receita' AND status='pago' AND data BETWEEN %s AND %s
+           GROUP BY forma_pagamento""", (de, ate))}
+    taxas = {r['forma']: float(r['total']) for r in q_all(
+        """SELECT COALESCE(forma_pagamento,'—') AS forma, COALESCE(SUM(valor),0) AS total
+           FROM movimentos WHERE origem='taxa' AND status='pago' AND data BETWEEN %s AND %s
+           GROUP BY forma_pagamento""", (de, ate))}
+    configurada = {r['nome']: float(r['taxa_pct'] or 0) for r in q_all("SELECT nome, taxa_pct FROM formas_pagamento")}
+
+    rows = []
+    for forma in sorted(set(bruto) | set(taxas)):
+        b = float(bruto.get(forma, {}).get('total') or 0)
+        t = round(taxas.get(forma, 0), 2)
+        rows.append({'forma': forma, 'bruto': round(b, 2), 'qtd': bruto.get(forma, {}).get('qtd') or 0,
+                     'taxa': t, 'liquido': round(b - t, 2),
+                     'taxa_pct_efetiva': round(t / b * 100, 2) if b else 0,
+                     'taxa_pct_config': configurada.get(forma)})
+    rows.sort(key=lambda x: x['taxa'], reverse=True)
+
+    tot_bruto = round(sum(r['bruto'] for r in rows), 2)
+    tot_taxa = round(sum(r['taxa'] for r in rows), 2)
+    return jsonify({'ok': True, 'de': de.isoformat(), 'ate': ate.isoformat(), 'rows': rows,
+                    'total_bruto': tot_bruto, 'total_taxa': tot_taxa,
+                    'total_liquido': round(tot_bruto - tot_taxa, 2),
+                    'taxa_pct_media': round(tot_taxa / tot_bruto * 100, 2) if tot_bruto else 0})
 
 
 def calc_comissao(de, ate, profissional_id=None):

@@ -25,6 +25,7 @@
     <button class="btn btn-sm btn-primary" style="flex:1" id="btn-walkin" onclick="abrirWalkin()">⚡ Sem hora marcada</button>
   </div>
 
+  <div id="msgs"></div>
   <div id="conteudo"><div class="empty">Carregando…</div></div>
 </div>
 
@@ -57,12 +58,33 @@
   <div class="modal">
     <h2 id="ac-titulo">Agendamento</h2>
     <div class="card"><div id="ac-info"></div></div>
+    <!-- Pedido vindo do link público: aceitar joga na agenda e gera o aviso pra mandar -->
+    <div id="ac-pendente" style="display:none">
+      <button class="btn btn-primary btn-block" style="margin-top:10px" onclick="acaoAgendamento('agendado')">✅ Aceitar o horário</button>
+      <button class="btn btn-danger btn-block" style="margin-top:8px" onclick="acaoAgendamento('cancelado')">Recusar</button>
+    </div>
     <div id="ac-acoes">
       <button class="btn btn-primary btn-block" style="margin-top:10px" onclick="abrirComandaDoAgendamento()">🧾 Abrir comanda (atender)</button>
       <button class="btn btn-block" style="margin-top:8px" onclick="acaoAgendamento('falta')">Marcar falta</button>
       <button class="btn btn-danger btn-block" style="margin-top:8px" onclick="acaoAgendamento('cancelado')">Cancelar agendamento</button>
     </div>
     <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="closeModal('mAcao')">Fechar</button>
+  </div>
+</div>
+
+<!-- Avisar o cliente logo depois de aceitar: é aqui que ela está pensando nele.
+     Mandar procurar o cartão lá em cima depois de rolar a agenda não funciona. -->
+<div class="modal-bg" id="mEnviar">
+  <div class="modal">
+    <h2>✅ Aceito! Avisar o cliente?</h2>
+    <div class="card"><div id="env-info"></div></div>
+    <div class="card" style="background:var(--surface2);max-height:190px;overflow:auto">
+      <div class="ri-sub" style="white-space:pre-wrap;margin:0" id="env-texto"></div>
+    </div>
+    <a class="btn btn-primary btn-block" id="env-link" target="_blank" rel="noopener" onclick="confirmarEnvio()">
+      💬 Abrir WhatsApp e enviar</a>
+    <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="closeModal('mEnviar')">Depois</button>
+    <div class="hint" style="text-align:center;margin-top:8px">Fica guardado no aviso da Agenda até você mandar.</div>
   </div>
 </div>
 
@@ -160,9 +182,10 @@ function render() {
       if (o && o.start) {
         const ag = o.ag;
         const servTxt = (ag.servicos_nomes && ag.servicos_nomes.length) ? ag.servicos_nomes.join(', ') : (ag.servico_nome || '');
-        html += `<div class="slot ocupado" onclick="abrirAcao(${ag.id})">
-          <strong>${ag.assinante ? '⭐ ' : ''}${escapeHtml(ag.cliente_nome || 'Cliente')}</strong>
-          <span class="muted">${escapeHtml(servTxt)}</span></div>`;
+        const pend = ag.status === 'pendente';
+        html += `<div class="slot ocupado${pend ? ' pendente' : ''}" onclick="abrirAcao(${ag.id})">
+          <strong>${pend ? '⏳ ' : (ag.assinante ? '⭐ ' : '')}${escapeHtml(ag.cliente_nome || 'Cliente')}</strong>
+          <span class="muted">${pend ? 'aguardando você' : escapeHtml(servTxt)}</span></div>`;
       } else if (o) {
         html += `<div class="slot ocupado" onclick="abrirAcao(${o.ag.id})"><span class="muted">↳ ${escapeHtml(o.ag.cliente_nome || '')}</span></div>`;
       } else if (bloqueado(p.id, slot)) {
@@ -176,6 +199,49 @@ function render() {
   });
   html += `</div></div>`;
   cont.innerHTML = html;
+}
+
+// ── Fila de mensagens de WhatsApp (envio manual) ──────────────────────
+// Nada é disparado: o botão abre o WhatsApp DELA com o texto pronto. O sistema não tem como
+// saber se ela apertou enviar — por isso marca no clique e deixa o "desfazer" à mão.
+let MSGS = null, MSGS_ABERTO = false;
+
+async function carregarMensagens() {
+  if (READONLY) return;
+  try { MSGS = await api('/api/mensagens/pendentes'); } catch { return; }
+  renderMensagens();
+}
+
+function renderMensagens() {
+  const box = document.getElementById('msgs');
+  if (!MSGS || !MSGS.total) { box.innerHTML = ''; return; }
+  const itens = [...MSGS.aceites, ...MSGS.lembretes];
+  // O sticky mora no #msgs (app.css), não neste cartão: elemento sticky só gruda dentro da caixa
+  // do PAI, e um pai com a mesma altura do filho não deixa espaço nenhum pra isso acontecer.
+  box.innerHTML = `<div class="card msgs-card">
+      <div class="row-item" style="border:none;padding:0;cursor:pointer" onclick="MSGS_ABERTO=!MSGS_ABERTO;renderMensagens()">
+        <div><div class="ri-main">💬 ${MSGS.total} mensagem(ns) para enviar</div>
+          <div class="ri-sub">${MSGS.aceites.length} confirmação(ões) · ${MSGS.lembretes.length} lembrete(s) de amanhã</div></div>
+        <div class="muted">${MSGS_ABERTO ? '▾ fechar' : '▸ ver'}</div>
+      </div>
+      ${MSGS_ABERTO ? '<div class="list" style="margin-top:12px">' + itens.map(m => `
+        <div class="row-item">
+          <div style="flex:1">
+            <div class="ri-main">${m.tipo === 'aceite' ? '✅' : '⏰'} ${escapeHtml(m.cliente_nome)}</div>
+            <div class="ri-sub">${m.tipo === 'aceite' ? 'confirmar que aceitou' : 'lembrete de amanhã'} · ${fmtData(m.data)} ${m.hora}</div>
+            ${m.sem_telefone ? '<div class="ri-sub" style="color:var(--orange)">sem telefone cadastrado</div>' : ''}
+          </div>
+          ${m.sem_telefone
+            ? `<button class="btn btn-sm" onclick="marcarEnviada('${m.tipo}',${m.agendamento_id})">dispensar</button>`
+            : `<button class="btn btn-sm btn-primary" onclick="abrirEnvio(${m.agendamento_id})">Enviar</button>`}
+        </div>`).join('') + '</div>' : ''}
+    </div>`;
+}
+
+async function marcarEnviada(tipo, id) {
+  try { await api(`/api/mensagens/${tipo}/${id}/enviado`, { method:'POST' }); }
+  catch (e) { toast(e.message, 'err'); return; }
+  setTimeout(carregarMensagens, 400);
 }
 
 // ── Busca de cliente (reutilizável) ──
@@ -288,15 +354,50 @@ function abrirAcao(agId) {
       ? `<br><span class="badge assinante">⭐ ${escapeHtml(ag.plano_nome||'assinante')}</span> <span style="color:var(--green)">coberto neste dia (R$ 0)</span>`
       : `<br><span class="badge assinante">⭐ ${escapeHtml(ag.plano_nome||'assinante')}</span> <span style="color:var(--orange)">fora do plano neste dia — será cobrado</span>`;
   }
+  const pend = ag.status === 'pendente';
+  const online = ag.origem === 'online' ? '<br><span class="badge warn">🔗 veio do link online</span>' : '';
   document.getElementById('ac-info').innerHTML =
     `<strong>${escapeHtml(ag.cliente_nome||'Cliente')}</strong><br>
-     <span class="muted">${escapeHtml(servTxt)} · ${hhmm(ag.hora_inicio)}</span>${planoLinha}`;
-  document.getElementById('ac-acoes').style.display = READONLY ? 'none' : 'block';  // barbeiro só vê
+     <span class="muted">${escapeHtml(servTxt)} · ${hhmm(ag.hora_inicio)}</span>${planoLinha}${online}`;
+  // Pendente só oferece aceitar/recusar: abrir comanda de quem você ainda não aceitou não faz sentido
+  document.getElementById('ac-pendente').style.display = (!READONLY && pend) ? 'block' : 'none';
+  document.getElementById('ac-acoes').style.display = (!READONLY && !pend) ? 'block' : 'none';
   openModal('mAcao');
 }
 async function acaoAgendamento(status) {
-  try { await api('/api/agendamentos/'+ctxAcao.id, { method:'PUT', body:{ status } }); toast('Atualizado.', 'ok'); closeModal('mAcao'); carregar(); }
-  catch (e) { toast(e.message, 'err'); }
+  const aceitou = status === 'agendado';
+  const alvo = ctxAcao.id;
+  try {
+    await api('/api/agendamentos/'+alvo, { method:'PUT', body:{ status } });
+    closeModal('mAcao'); carregar();
+    await carregarMensagens();
+    // Aceitou → já oferece o envio, em vez de mandar procurar o cartão no topo da agenda
+    if (aceitou && abrirEnvio(alvo)) return;
+    toast('Atualizado.', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// Abre o modal de envio pra UM agendamento. Devolve false se não houver mensagem pendente
+// pra ele (cliente sem telefone, ou já avisado).
+function abrirEnvio(agId) {
+  const m = [...((MSGS && MSGS.aceites) || []), ...((MSGS && MSGS.lembretes) || [])]
+              .find(x => x.agendamento_id === agId);
+  if (!m || !m.wa_url) {
+    if (m && m.sem_telefone) toast('Aceito — mas esse cliente não tem telefone cadastrado.', 'ok');
+    return false;
+  }
+  envioAtual = m;
+  document.getElementById('env-info').innerHTML =
+    `<strong>${escapeHtml(m.cliente_nome)}</strong><br><span class="muted">${escapeHtml(m.telefone || '')} · ${fmtData(m.data)} ${m.hora}</span>`;
+  document.getElementById('env-texto').textContent = m.texto;
+  document.getElementById('env-link').href = m.wa_url;
+  openModal('mEnviar');
+  return true;
+}
+let envioAtual = null;
+function confirmarEnvio() {
+  if (envioAtual) marcarEnviada(envioAtual.tipo, envioAtual.agendamento_id);
+  closeModal('mEnviar');
 }
 async function abrirComandaDoAgendamento() {
   try {
@@ -331,6 +432,7 @@ setData(hoje());
   } else {
     // mapa de assinantes ativos p/ pré-seleção e avisos de cobertura no agendamento
     try { (await api('/api/assinantes/ativos')).rows.forEach(a => { ASSIN[a.cliente_id] = a; }); } catch (e) {}
+    carregarMensagens();
   }
   carregar();
 })();

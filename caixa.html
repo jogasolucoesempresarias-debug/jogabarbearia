@@ -23,6 +23,12 @@
 
   <div class="section-title">Por forma de pagamento</div>
   <div class="list" id="formas"></div>
+  <div class="card" id="liquido-card" style="display:none;margin-top:10px">
+    <div class="row-item" style="border:none;padding:0"><div class="ri-main">Bruto</div><div class="ri-right" id="k-bruto">—</div></div>
+    <div class="row-item" style="border:none;padding:4px 0"><div class="ri-main muted">Taxas de cartão</div><div class="ri-right" id="k-taxas" style="color:var(--red)">—</div></div>
+    <div class="row-item" style="border:none;padding:0;border-top:1px solid var(--border);padding-top:8px">
+      <div class="ri-main">Líquido a receber</div><div class="ri-right" id="k-liquido" style="color:var(--green)">—</div></div>
+  </div>
 
   <div class="section-title">A receber (assinaturas previstas)</div>
   <div class="list" id="previstos"></div>
@@ -39,8 +45,18 @@
     <div class="field"><label>Descrição</label><input type="text" id="t-desc"></div>
     <div class="field"><label>Valor (R$)</label><input type="number" id="t-valor" inputmode="decimal" step="0.01"></div>
     <div class="field"><label>Categoria (despesa)</label><select id="t-cat"></select></div>
-    <div class="field"><label>Forma</label><select id="t-forma"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
+    <div class="field"><label>Forma</label><select id="t-forma"></select></div>
     <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('m')">Cancelar</button><button class="btn btn-primary" onclick="lancar()">Lançar</button></div>
+  </div>
+</div>
+
+<!-- Receber um previsto: a forma define a taxa da maquininha, então tem que ser perguntada -->
+<div class="modal-bg" id="mReceber">
+  <div class="modal">
+    <h2>Receber</h2>
+    <div class="card"><div id="r-info" class="muted"></div></div>
+    <div class="field"><label>Forma de pagamento</label><select id="r-forma"></select></div>
+    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('mReceber')">Cancelar</button><button class="btn btn-primary" onclick="confirmarReceber()">Confirmar</button></div>
   </div>
 </div>
 
@@ -55,10 +71,18 @@ async function carregar() {
     const s = document.getElementById('k-saldo'); s.textContent = money(f.saldo); s.className = 'value ' + (f.saldo>=0?'pos':'neg');
     document.getElementById('k-atend').textContent = f.atendimentos;
     document.getElementById('formas').innerHTML = f.por_forma.length
-      ? f.por_forma.map(x=>`<div class="row-item"><div class="ri-main">${escapeHtml(x.forma)}</div><div class="ri-right">${money(x.total)} <span class="muted">(${x.qtd})</span></div></div>`).join('')
+      ? f.por_forma.map(x=>`<div class="row-item"><div><div class="ri-main">${escapeHtml(x.forma)}</div>
+          ${x.taxa>0?`<div class="ri-sub">taxa ${money(x.taxa)} · líquido ${money(x.liquido)}</div>`:''}</div>
+          <div class="ri-right">${money(x.total)} <span class="muted">(${x.qtd})</span></div></div>`).join('')
       : '<div class="empty">Sem recebimentos.</div>';
+    // Só mostra o bloco de líquido quando houve taxa — sem cartão no dia, é ruído
+    const lc = document.getElementById('liquido-card');
+    lc.style.display = f.total_taxas > 0 ? 'block' : 'none';
+    document.getElementById('k-bruto').textContent = money(f.total_receita);
+    document.getElementById('k-taxas').textContent = '−' + money(f.total_taxas);
+    document.getElementById('k-liquido').textContent = money(f.liquido);
 
-    const movs = (await api('/api/movimentos?de='+data+'&ate='+data)).rows;
+    const movs = MOVS = (await api('/api/movimentos?de='+data+'&ate='+data)).rows;
     document.getElementById('previstos').innerHTML = movs.filter(m=>m.status==='previsto').map(m=>`
       <div class="row-item"><div><div class="ri-main">${escapeHtml(m.descricao)}</div><div class="ri-sub">vence ${fmtData(m.vencimento)}</div></div>
         <div style="display:flex;gap:8px;align-items:center"><div class="ri-right">${money(m.valor)}</div><button class="btn btn-sm btn-primary" onclick="baixar(${m.id})">Receber</button></div></div>`).join('') || '<div class="empty">Nada previsto.</div>';
@@ -75,9 +99,21 @@ async function excluir(id) {
   try { await api('/api/movimentos/'+id, { method:'DELETE' }); toast('Lançamento excluído.', 'ok'); carregar(); }
   catch (e) { toast(e.message, 'err'); }
 }
-async function baixar(id) {
-  try { await api('/api/movimentos/'+id+'/pagar', { method:'POST', body:{} }); toast('Recebido!', 'ok'); carregar(); }
-  catch (e) { toast(e.message, 'err'); }
+// Receber pede a forma: é ela que define a taxa da maquininha do lançamento.
+// O id basta — buscar o resto em MOVS evita interpolar texto do usuário dentro do onclick.
+let receberId = null, MOVS = [];
+function baixar(id) {
+  const m = MOVS.find(x => x.id === id);
+  if (!m) return;
+  receberId = id;
+  document.getElementById('r-info').innerHTML = `<strong>${escapeHtml(m.descricao)}</strong><br>${money(m.valor)}`;
+  openModal('mReceber');
+}
+async function confirmarReceber() {
+  try {
+    await api('/api/movimentos/'+receberId+'/pagar', { method:'POST', body:{ forma_pagamento: document.getElementById('r-forma').value }});
+    toast('Recebido!', 'ok'); closeModal('mReceber'); carregar();
+  } catch (e) { toast(e.message, 'err'); }
 }
 async function lancar() {
   try {
@@ -87,7 +123,13 @@ async function lancar() {
 }
 document.getElementById('f-data').value = hoje();
 renderShell('/caixa');
-api('/api/config').then(j=>{ document.getElementById('t-cat').innerHTML = (j.config.categorias_despesa||[]).map(c=>`<option>${c}</option>`).join(''); }).catch(()=>{});
+api('/api/config').then(j=>{
+  document.getElementById('t-cat').innerHTML = (j.config.categorias_despesa||[]).map(c=>`<option>${escapeHtml(c)}</option>`).join('');
+  // Formas vêm da config (com Débito/Crédito): fixas no HTML, a taxa nunca seria escolhida
+  const opts = (j.config.formas_pagamento||['Dinheiro','Pix']).map(f=>`<option>${escapeHtml(f)}</option>`).join('');
+  document.getElementById('t-forma').innerHTML = opts;
+  document.getElementById('r-forma').innerHTML = opts;
+}).catch(()=>{});
 carregar();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>

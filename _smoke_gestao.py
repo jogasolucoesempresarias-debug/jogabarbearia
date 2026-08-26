@@ -15,7 +15,7 @@ ate = hoje.isoformat()
 OK = 0; FAIL = 0
 def check(label, cond, extra=''):
     global OK, FAIL
-    print(f"  [{'PASS' if cond else 'FALHA'}] {label}" + (f"  → {extra}" if extra else '')); OK += cond; FAIL += (not cond)
+    print(f"  [{'PASS' if cond else 'FALHA'}] {label}" + (f"  → {extra}" if extra else '')); OK += bool(cond); FAIL += (not cond)
 
 def call(m, p, b=None):
     data = json.dumps(b).encode() if b is not None else None

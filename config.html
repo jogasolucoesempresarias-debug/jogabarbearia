@@ -10,6 +10,10 @@
 <link rel="stylesheet" href="/static/app.css">
 <style>
   /* Cartaz do QR de cadastro — bonito na tela e na impressão (PDF) */
+  /* Campo de taxa dentro da linha da lista (fora de .field, que é quem carrega o estilo padrão) */
+  .taxa-inp { width:76px; padding:8px 9px; background:var(--surface2); border:1px solid var(--border);
+              border-radius:9px; color:var(--text); font-family:inherit; font-size:16px; text-align:right; }
+  .taxa-inp:focus { outline:none; border-color:var(--accent); }
   .qr-cartaz { position:relative; background:#fff; color:#0f172a; border-radius:20px; padding:30px 24px 22px; text-align:center; margin:14px 0; overflow:hidden; box-shadow:0 12px 34px rgba(0,0,0,0.28); }
   .qr-cartaz .qr-bar { position:absolute; top:0; left:0; right:0; height:8px; }                 /* cor da marca (inline) */
   .qr-cartaz .qr-mono { width:56px; height:56px; border-radius:16px; margin:8px auto 14px; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:1.55rem; box-shadow:0 8px 18px rgba(15,23,42,0.22); }
@@ -42,6 +46,8 @@
     <button data-t="prod" onclick="tab('prod',this)">Produtos</button>
     <button data-t="prof" onclick="tab('prof',this)">Barbeiros</button>
     <button data-t="plano" onclick="tab('plano',this)">Planos</button>
+    <button data-t="pgto" onclick="tab('pgto',this)">Pagamentos</button>
+    <button data-t="agonline" onclick="tab('agonline',this)">Agendamento</button>
     <button data-t="geral" onclick="tab('geral',this)">Geral</button>
     <button data-t="qr" onclick="tab('qr',this)">QR Cadastro</button>
   </div>
@@ -83,6 +89,79 @@ async function render() {
     const { rows } = await api('/api/planos');
     p.innerHTML = `<div class="card"><button class="btn btn-primary btn-block" onclick="novoPlano()">+ Novo plano</button></div>` +
       '<div class="list">'+rows.map(pl=>`<div class="row-item" onclick='editarPlano(${JSON.stringify(pl)})'><div><div class="ri-main">${escapeHtml(pl.nome)}</div><div class="ri-sub">${money(pl.valor_mensal)}/mês · ${(pl.servicos||[]).map(x=>x.nome).join(', ')||'sem serviço'}</div><div class="ri-sub muted">comissão: ${rotuloRegra(pl)}</div></div><div class="muted">›</div></div>`).join('')+'</div>';
+  } else if (ATUAL==='pgto') {
+    const { rows } = await api('/api/formas-pagamento');
+    p.innerHTML = `<div class="card">
+        <div class="section-title" style="margin-top:0">Nova forma de pagamento</div>
+        <div class="field"><label>Nome</label><input id="fp-nome" placeholder="Ex.: Crédito"></div>
+        <div class="field"><label>Taxa da maquininha (%)</label><input id="fp-taxa" type="number" inputmode="decimal" step="0.01" value="0"></div>
+        <button class="btn btn-primary btn-block" onclick="addForma()">+ Adicionar</button></div>
+      <div class="card" style="border-color:rgba(56,189,248,.3)">
+        <div class="ri-sub" style="margin:0">A cada venda nessa forma, o sistema lança a taxa como despesa em
+        <strong>“Taxas de cartão”</strong>. A receita continua <strong>cheia</strong> — o que o cliente pagou —
+        para a comissão do barbeiro não mudar conforme a maquininha. Dinheiro e Pix ficam em 0%.</div></div>
+      <div class="section-title">Formas cadastradas</div>
+      <div class="list">` + rows.map(f=>`
+        <div class="row-item">
+          <div style="flex:1">
+            <div class="ri-main">${escapeHtml(f.nome)} ${f.ativo?'':'<span class="badge dim">inativa</span>'}</div>
+            <div class="ri-sub">${Number(f.taxa_pct)>0?('taxa de '+Number(f.taxa_pct).toFixed(2).replace('.',',')+'%'):'sem taxa'}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input class="taxa-inp" type="number" step="0.01" min="0" inputmode="decimal" value="${Number(f.taxa_pct)}"
+                   onchange="salvarTaxa(${f.id},this.value)" title="Taxa %">
+            <button class="btn btn-sm" onclick="toggleForma(${f.id},${!f.ativo})">${f.ativo?'desativar':'ativar'}</button>
+          </div></div>`).join('') + '</div>';
+  } else if (ATUAL==='agonline') {
+    CFG = (await api('/api/config')).config;
+    const profs = (await api('/api/profissionais')).rows;
+    const url = location.origin + '/agendar';
+    const on = !!CFG.agendamento_online;
+    p.innerHTML = `<div class="card">
+        <div class="section-title" style="margin-top:0">Agendamento online</div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <input type="checkbox" id="ag-on" ${on?'checked':''} style="width:auto"> <strong>Ligado</strong></label>
+        <div class="hint" style="margin-bottom:14px">Desligado, o link fica fora do ar e ninguém consegue marcar sozinho.</div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <input type="checkbox" id="ag-manual" ${CFG.agendamento_confirmar_manual?'checked':''} style="width:auto"> Eu confirmo cada agendamento</label>
+        <div class="hint" style="margin-bottom:14px">Ligado, o pedido chega como <strong>pendente</strong> e você aceita na Agenda.
+          Desligado, cai direto no horário.</div>
+        <div class="field"><label>Antecedência mínima (horas)</label>
+          <input id="ag-antec" type="number" inputmode="numeric" min="0" value="${CFG.agendamento_antecedencia_horas ?? 2}"></div>
+        <div class="field"><label>Pode marcar com quantos dias de antecedência</label>
+          <input id="ag-janela" type="number" inputmode="numeric" min="1" value="${CFG.agendamento_janela_dias ?? 30}"></div>
+        <div class="field"><label>Endereço (aparece na mensagem de confirmação)</label>
+          <input id="ag-end" value="${escapeHtml(CFG.marca_endereco||'')}"></div>
+        <button class="btn btn-primary btn-block" onclick="salvarAgOnline()">Salvar</button>
+      </div>
+
+      <div class="section-title">Quem aparece no link</div>
+      <div class="list">${profs.map(s=>`<div class="row-item">
+          <div><div class="ri-main"><span class="dot" style="background:${s.cor_agenda}"></span>${escapeHtml(s.nome)}</div>
+            <div class="ri-sub">${s.aceita_online?'<span style="color:var(--green)">aceita agendamento online</span>':'<span class="muted">fora do agendamento online</span>'}</div></div>
+          <button class="btn btn-sm" onclick="toggleOnline(${s.id},${!s.aceita_online})">${s.aceita_online?'tirar':'incluir'}</button>
+        </div>`).join('')}</div>
+
+      ${on ? `<div class="section-title">Cartaz do link</div>
+      <div class="card">
+        <div class="hint" style="margin-bottom:6px">Mande o link no Instagram, no status do WhatsApp e no Google. Imprima o cartaz pro balcão.</div>
+        <div class="qr-cartaz" id="qr-cartaz">
+          <div class="qr-bar" style="background:${ACCENT}"></div>
+          <div class="qr-mono" style="background:${ACCENT}">${escapeHtml((CFG.marca_nome||'B').trim().charAt(0).toUpperCase())}</div>
+          <div class="qr-titulo">${escapeHtml(CFG.marca_nome||'Barbearia')}</div>
+          <div class="qr-sub">Agende seu horário pelo celular, a qualquer hora</div>
+          <div class="qr-frame"><div class="qrbox" id="qrbox"></div></div>
+          <div class="qr-instr">📷 Aponte a câmera do celular para o código</div>
+          <div class="qr-link">${escapeHtml(url.replace(/^https?:\/\//,''))}</div>
+          <div class="qr-rodape">JOGA · Soluções Empresariais</div>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="window.print()">🖨️ Imprimir cartaz</button>
+        <button class="btn btn-block" style="margin-top:8px" onclick="copiarLink('${url}')">🔗 Copiar link</button>
+      </div>` : ''}`;
+    if (on) {
+      const box = document.getElementById('qrbox'); box.innerHTML = '';
+      new QRCode(box, { text: url, width: 220, height: 220, colorDark: '#0f172a', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
+    }
   } else if (ATUAL==='qr') {
     CFG = (await api('/api/config')).config;
     const url = location.origin + '/cadastro';
@@ -112,8 +191,8 @@ async function render() {
     const dias = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
     p.innerHTML = `<div class="card">
       <div class="field"><label>Nome da barbearia (marca)</label><input id="g-nome" value="${escapeHtml(CFG.marca_nome||'')}"></div>
-      <div class="field"><label>Formas de pagamento (separadas por vírgula)</label><input id="g-formas" value="${(CFG.formas_pagamento||[]).join(', ')}"></div>
       <div class="field"><label>Categorias de despesa (separadas por vírgula)</label><input id="g-catdesp" value="${(CFG.categorias_despesa||[]).join(', ')}"></div>
+      <div class="hint" style="margin:-6px 0 12px">Formas de pagamento agora ficam na aba <strong>Pagamentos</strong> (é lá que fica a taxa da maquininha).</div>
       <div class="field"><label>% do bolo dos planos (comissão de assinante)</label><input id="g-bolo" type="number" inputmode="decimal" step="0.5" value="${CFG.comissao_padrao||45}"></div>
       <div class="hint" style="margin-bottom:10px">Vale só para os planos com regra <strong>bolo</strong>: essa fatia da arrecadação deles é rateada entre os barbeiros pela produção. Planos com regra <em>tabela</em>, <em>fixo</em> ou <em>zero</em> não usam este número.</div>
       <button class="btn btn-primary btn-block" onclick="salvarGeral()">Salvar geral</button>
@@ -133,6 +212,27 @@ async function addServ(){ try{ await api('/api/servicos',{method:'POST',body:{no
 async function addProd(){ try{ await api('/api/produtos',{method:'POST',body:{nome:V('p-nome'),preco:V('p-preco')}}); toast('Criado!','ok'); render(); }catch(e){toast(e.message,'err');} }
 async function addProf(){ try{ await api('/api/profissionais',{method:'POST',body:{nome:V('b-nome'),comissao_pct:V('b-com')||45,recebe_comissao:document.getElementById('b-recebe').checked}}); toast('Criado!','ok'); render(); }catch(e){toast(e.message,'err');} }
 async function toggleComissao(id, novo){ try{ await api('/api/profissionais/'+id,{method:'PUT',body:{recebe_comissao:novo}}); toast('Atualizado.','ok'); render(); }catch(e){toast(e.message,'err');} }
+
+// Agendamento online
+async function salvarAgOnline(){
+  try{
+    await api('/api/config',{method:'PUT',body:{
+      agendamento_online: document.getElementById('ag-on').checked,
+      agendamento_confirmar_manual: document.getElementById('ag-manual').checked,
+      agendamento_antecedencia_horas: Number(V('ag-antec'))||0,
+      agendamento_janela_dias: Number(V('ag-janela'))||30,
+      marca_endereco: V('ag-end'),
+    }});
+    toast('Salvo!','ok'); render();
+  }catch(e){toast(e.message,'err');}
+}
+async function toggleOnline(id, valor){ try{ await api('/api/profissionais/'+id,{method:'PUT',body:{aceita_online:valor}}); toast('Atualizado.','ok'); render(); }catch(e){toast(e.message,'err');} }
+async function copiarLink(url){ try{ await navigator.clipboard.writeText(url); toast('Link copiado!','ok'); }catch{ toast(url,'ok'); } }
+
+// Formas de pagamento (a taxa da maquininha mora aqui)
+async function addForma(){ try{ await api('/api/formas-pagamento',{method:'POST',body:{nome:V('fp-nome'),taxa_pct:V('fp-taxa')||0}}); toast('Criada!','ok'); render(); }catch(e){toast(e.message,'err');} }
+async function salvarTaxa(id, valor){ try{ await api('/api/formas-pagamento/'+id,{method:'PUT',body:{taxa_pct:Number(valor)||0}}); toast('Taxa salva.','ok'); render(); }catch(e){toast(e.message,'err');} }
+async function toggleForma(id, ativo){ try{ await api('/api/formas-pagamento/'+id,{method:'PUT',body:{ativo}}); toast('Atualizado.','ok'); render(); }catch(e){toast(e.message,'err');} }
 async function delItem(rec,id){ if(!confirm('Excluir?'))return; try{ await api('/api/'+rec+'/'+id,{method:'DELETE'}); toast('Excluído.','ok'); render(); }catch(e){toast(e.message,'err');} }
 
 // Planos
@@ -196,7 +296,7 @@ async function salvarPlano(){
 }
 
 async function salvarGeral(){
-  try { await api('/api/config',{method:'PUT',body:{ marca_nome:V('g-nome'), comissao_padrao:V('g-bolo')||45, formas_pagamento:V('g-formas').split(',').map(s=>s.trim()).filter(Boolean), categorias_despesa:V('g-catdesp').split(',').map(s=>s.trim()).filter(Boolean) }}); toast('Salvo!','ok'); }
+  try { await api('/api/config',{method:'PUT',body:{ marca_nome:V('g-nome'), comissao_padrao:V('g-bolo')||45, categorias_despesa:V('g-catdesp').split(',').map(s=>s.trim()).filter(Boolean) }}); toast('Salvo!','ok'); }
   catch(e){ toast(e.message,'err'); }
 }
 async function salvarHorarios(){

@@ -46,7 +46,10 @@ def limpar(cur):
     cur.execute(f"DELETE FROM comandas WHERE valor_total = 888888")
     cur.execute(f"DELETE FROM comissoes_pagas WHERE profissional_id IN "
                 f"(SELECT id FROM profissionais WHERE nome LIKE '{MARCA}%%')")
-    cur.execute(f"DELETE FROM movimentos WHERE descricao LIKE '{MARCA}%%'")
+    # Marcador em QUALQUER posição: a despesa do fechamento nasce como "Comissão [SR] A (…)",
+    # e um LIKE ancorado no começo deixava ela pra trás — o que fazia o _smoke_despesas falhar
+    # quando rodava depois deste. Suíte com resíduo é suíte dependente de ordem.
+    cur.execute(f"DELETE FROM movimentos WHERE descricao LIKE '%%{MARCA}%%'")
     cur.execute(f"DELETE FROM assinaturas WHERE cliente_id IN "
                 f"(SELECT id FROM clientes WHERE nome LIKE '{MARCA}%%')")
     cur.execute(f"DELETE FROM clientes WHERE nome LIKE '{MARCA}%%'")

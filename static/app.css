@@ -150,6 +150,13 @@ a { color: inherit; text-decoration: none; }
 .slot.livre { background: var(--surface); color: var(--text-dim); align-items: center; }
 .slot.ocupado { background: rgba(56,189,248,0.1); border-color: rgba(56,189,248,0.3); }
 .slot.bloqueado { background: rgba(148,163,184,0.08); color: var(--text-dim); cursor: not-allowed; }
+/* Aviso de mensagens: gruda no topo enquanto a agenda rola. O sticky vai no CONTEINER
+   (#msgs), nao no cartao — sticky so gruda dentro da caixa do pai, e um pai com a altura
+   exata do filho nao deixa espaco pra grudar. :not(:empty) = so quando ha o que enviar. */
+#msgs:not(:empty) { position: sticky; top: 0; z-index: 20; }
+.msgs-card { border-color: rgba(52,211,153,0.45); box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
+/* Pedido vindo do link publico, ainda nao aceito pela barbearia */
+.slot.pendente { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.45); border-style: dashed; }
 .slot .hora { font-family: 'JetBrains Mono', monospace; color: var(--text-dim); font-size: 0.68rem; }
 .timecol { display: flex; align-items: center; justify-content: flex-end; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text-dim); padding-right: 6px; min-width: 44px; }
 

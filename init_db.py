@@ -49,6 +49,8 @@ cur.execute("""
 """)
 # Dono-barbeiro não recebe comissão (o que atende é da casa)
 cur.execute("ALTER TABLE profissionais ADD COLUMN IF NOT EXISTS recebe_comissao BOOLEAN DEFAULT true;")
+# Nem todo barbeiro quer aparecer no agendamento online (a dona costuma preferir agenda controlada)
+cur.execute("ALTER TABLE profissionais ADD COLUMN IF NOT EXISTS aceita_online BOOLEAN NOT NULL DEFAULT true;")
 
 # ── Usuários (login) — dono / caixa / barbeiro ────────────────────────
 cur.execute("""
@@ -185,6 +187,18 @@ cur.execute("""
 cur.execute("CREATE INDEX IF NOT EXISTS ix_agend_data ON agendamentos(data, profissional_id);")
 # Múltiplos serviços por agendamento (lista de ids); servico_id segue como "principal" p/ display
 cur.execute("ALTER TABLE agendamentos ADD COLUMN IF NOT EXISTS servicos_ids JSONB DEFAULT '[]'::jsonb;")
+# Agendamento online: origem 'online' e o status 'pendente' (esperando a barbearia aceitar).
+cur.execute("ALTER TABLE agendamentos DROP CONSTRAINT IF EXISTS agendamentos_origem_check;")
+cur.execute("""ALTER TABLE agendamentos ADD CONSTRAINT agendamentos_origem_check
+    CHECK (origem IN ('agenda', 'walkin', 'online'));""")
+cur.execute("ALTER TABLE agendamentos DROP CONSTRAINT IF EXISTS agendamentos_status_check;")
+cur.execute("""ALTER TABLE agendamentos ADD CONSTRAINT agendamentos_status_check
+    CHECK (status IN ('pendente', 'agendado', 'atendido', 'cancelado', 'falta'));""")
+# Fila de mensagens (WhatsApp manual): NULL = ainda não enviada. Sem isso não há fila — e a fila
+# É a consulta, o que dispensa cron/agendador no servidor.
+cur.execute("ALTER TABLE agendamentos ADD COLUMN IF NOT EXISTS confirmacao_enviada_em TIMESTAMP;")
+cur.execute("ALTER TABLE agendamentos ADD COLUMN IF NOT EXISTS lembrete_enviado_em TIMESTAMP;")
+cur.execute("CREATE INDEX IF NOT EXISTS ix_agend_pendente ON agendamentos(status, data) WHERE status='pendente';")
 
 # ── Bloqueios de agenda (folga, almoço, férias) ───────────────────────
 cur.execute("""
@@ -260,6 +274,12 @@ cur.execute("CREATE INDEX IF NOT EXISTS ix_mov_status ON movimentos(status);")
 # Despesas: categoria + vínculo com despesa fixa recorrente (aditivo)
 cur.execute("ALTER TABLE movimentos ADD COLUMN IF NOT EXISTS categoria VARCHAR(40);")
 cur.execute("ALTER TABLE movimentos ADD COLUMN IF NOT EXISTS despesa_fixa_id INTEGER;")
+# origem='taxa': a taxa da maquininha, lançada como despesa e AMARRADA ao movimento de receita
+# que a gerou (ref_id = id da receita). Sem esse vínculo não dá pra desfazer junto.
+cur.execute("ALTER TABLE movimentos DROP CONSTRAINT IF EXISTS movimentos_origem_check;")
+cur.execute("""ALTER TABLE movimentos ADD CONSTRAINT movimentos_origem_check
+    CHECK (origem IN ('comanda', 'assinatura', 'manual', 'taxa'));""")
+cur.execute("CREATE INDEX IF NOT EXISTS ix_mov_taxa ON movimentos(origem, ref_id) WHERE origem='taxa';")
 
 # ── Despesas fixas (recorrentes: aluguel, impostos, internet...) ──────
 cur.execute("""
@@ -282,7 +302,7 @@ cur.execute("""
         comissao_padrao   NUMERIC(5,2) DEFAULT 45,
         formas_pagamento  JSONB DEFAULT '["Dinheiro","Pix","Cartão"]'::jsonb,
         horarios          JSONB DEFAULT '{}'::jsonb,
-        taxa_cartao_pct   NUMERIC(5,2),
+        taxa_cartao_pct   NUMERIC(5,2),   -- NÃO USADA: a taxa virou por forma (formas_pagamento)
         cancelamento_taxa NUMERIC(10,2),
         marca_nome        VARCHAR(120) DEFAULT 'JOGA Barbearia',
         marca_logo_url    VARCHAR(255),
@@ -293,7 +313,53 @@ cur.execute("""
 cur.execute("INSERT INTO configuracoes (id) VALUES (1) ON CONFLICT (id) DO NOTHING;")
 # Categorias de despesa (configuráveis, incluindo Impostos)
 cur.execute("""ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS categorias_despesa JSONB
-    DEFAULT '["Impostos","Aluguel","Insumos/Produtos","Energia/Água","Salários","Comissões","Marketing","Manutenção","Outras"]'::jsonb;""")
+    DEFAULT '["Impostos","Aluguel","Insumos/Produtos","Energia/Água","Salários","Comissões","Taxas de cartão","Marketing","Manutenção","Outras"]'::jsonb;""")
+# O DEFAULT acima só vale pra instalação nova — quem já existe precisa ganhar a categoria.
+uma_vez('categoria_taxas_cartao',
+        """UPDATE configuracoes SET categorias_despesa = categorias_despesa || '["Taxas de cartão"]'::jsonb
+           WHERE NOT (categorias_despesa @> '["Taxas de cartão"]'::jsonb)""")
+
+# ── Agendamento online (público) ──────────────────────────────────────
+# Nasce DESLIGADO: instância existente não ganha porta pública sem alguém decidir.
+cur.execute("ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS agendamento_online BOOLEAN NOT NULL DEFAULT false;")
+# true = o agendamento entra como 'pendente' e a barbearia aceita. É o padrão de entrega:
+# a dona vê o movimento antes de confiar na máquina.
+cur.execute("ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS agendamento_confirmar_manual BOOLEAN NOT NULL DEFAULT true;")
+cur.execute("ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS agendamento_antecedencia_horas INTEGER NOT NULL DEFAULT 2;")
+cur.execute("ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS agendamento_janela_dias INTEGER NOT NULL DEFAULT 30;")
+# A ficha de coleta pergunta endereço e WhatsApp e o setup_aplicar jogava os dois fora —
+# não havia onde guardar. As mensagens de confirmação querem o endereço.
+cur.execute("ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS marca_endereco VARCHAR(255);")
+cur.execute("ALTER TABLE configuracoes ADD COLUMN IF NOT EXISTS marca_whatsapp VARCHAR(30);")
+
+# ── Formas de pagamento + taxa da maquininha ──────────────────────────
+# Assume o lugar de configuracoes.formas_pagamento (que era só um array de nomes, sem taxa).
+# O /api/config SEGUE devolvendo a lista de nomes derivada daqui — seis telas dependem daquela
+# forma. Aqui é a fonte da verdade; lá é o contrato de compatibilidade.
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS formas_pagamento (
+        id       SERIAL PRIMARY KEY,
+        nome     VARCHAR(40) UNIQUE NOT NULL,
+        taxa_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+        ordem    INTEGER NOT NULL DEFAULT 0,
+        ativo    BOOLEAN NOT NULL DEFAULT true
+    );
+""")
+# Semeia com o que a instância já usava (taxa 0 — ninguém perde nem ganha nada na migração).
+# 'Cartão' continua existindo: o histórico em movimentos.forma_pagamento guarda essa string e ela
+# precisa seguir significando algo. Quem quiser troca por Débito/Crédito e desativa no Config.
+uma_vez('formas_pagamento_seed',
+        """INSERT INTO formas_pagamento (nome, taxa_pct, ordem)
+           SELECT nome, 0, (ord - 1)::int
+             FROM configuracoes,
+                  LATERAL jsonb_array_elements_text(formas_pagamento) WITH ORDINALITY AS t(nome, ord)
+            WHERE configuracoes.id = 1
+           ON CONFLICT (nome) DO NOTHING""")
+# Débito e Crédito com taxa 0: a Regiane preenche o percentual dela no Config.
+uma_vez('formas_pagamento_cartao',
+        """INSERT INTO formas_pagamento (nome, taxa_pct, ordem) VALUES
+             ('Débito', 0, 10), ('Crédito', 0, 11)
+           ON CONFLICT (nome) DO NOTHING""")
 
 # ── Comissões pagas (fechamento por barbeiro/período → despesa no caixa) ──
 cur.execute("""

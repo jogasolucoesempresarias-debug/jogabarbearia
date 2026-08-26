@@ -200,6 +200,44 @@ try:
     check('agenda de 7 dias atrás tem histórico', len(ags) > 0, len(ags))
     check('e tudo lá está como atendido', all(a.get('status') == 'atendido' for a in ags))
 
+    # ── Telas novas: taxa da maquininha e agendamento online ──
+    # Na demo elas precisam nascer POPULADAS: tela vazia num tour de vendas parece defeito.
+    tx = pega(dono, f'/api/relatorios/taxas?de={ini}&ate={hoje.isoformat()}')
+    check('relatório de taxas responde', tx.get('ok'))
+    check('taxa de cartão tem valor no período', tx.get('total_taxa', 0) > 0, tx.get('total_taxa'))
+    check('líquido = bruto − taxa',
+          abs(tx.get('total_liquido', 0) - (tx.get('total_bruto', 0) - tx.get('total_taxa', 0))) < 0.01)
+    formas_tx = {r['forma']: r['taxa'] for r in tx.get('rows', [])}
+    check('crédito custa mais que débito (taxas diferentes de verdade)',
+          formas_tx.get('Crédito', 0) > formas_tx.get('Débito', 0), formas_tx)
+    check('dinheiro não tem taxa', formas_tx.get('Dinheiro', 0) == 0, formas_tx.get('Dinheiro'))
+
+    fp = pega(dono, '/api/formas-pagamento')
+    check('formas de pagamento cadastradas com taxa',
+          any(f['nome'] == 'Crédito' and f['taxa_pct'] > 0 for f in fp.get('rows', [])))
+
+    ctx = pega(dono, '/api/agendar/contexto')
+    check('agendamento online está ligado na demo', ctx.get('ok'))
+    check('link mostra serviços e barbeiros',
+          len(ctx.get('servicos') or []) > 0 and len(ctx.get('profissionais') or []) > 0)
+
+    pend = [a for a in (ag.get('agendamentos') or []) if a.get('status') == 'pendente']
+    amanha_ag = pega(dono, f'/api/agenda?data={(hoje + __import__("datetime").timedelta(days=1)).isoformat()}')
+    pend += [a for a in (amanha_ag.get('agendamentos') or []) if a.get('status') == 'pendente']
+    check('tem pedido online esperando aceite', len(pend) > 0, len(pend))
+
+    msg = pega(dono, '/api/mensagens/pendentes')
+    check('fila de mensagens responde', msg.get('ok'))
+    check('fila tem algo pra enviar', msg.get('total', 0) > 0, msg.get('total'))
+    todos = (msg.get('aceites') or []) + (msg.get('lembretes') or [])
+    com_link = [m for m in todos if m.get('wa_url')]
+    check('mensagens trazem link do WhatsApp', len(com_link) > 0, len(com_link))
+    check('link wa.me com número completo (55+DDD+9 dígitos)',
+          all(len(m['wa_url'].split('/')[-1].split('?')[0]) == 13 for m in com_link),
+          [m['wa_url'].split('/')[-1].split('?')[0] for m in com_link[:2]])
+    check('texto traz o nome da barbearia da demo',
+          all('Barbearia do Zé' in m['texto'] for m in todos))
+
     barb, jb = sessao('rafael@barbearia.local', 'demo')
     check('barbeiro entra', jb.get('ok'))
     mc = pega(barb, '/api/relatorios/minha-comissao')

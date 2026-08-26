@@ -135,7 +135,21 @@ HORARIOS = {"0": None,
             "3": {"abre": "09:00", "fecha": "20:00"}, "4": {"abre": "09:00", "fecha": "20:00"},
             "5": {"abre": "09:00", "fecha": "20:00"}, "6": {"abre": "08:00", "fecha": "17:00"}}
 cur.execute("""UPDATE configuracoes SET marca_nome='Barbearia do Zé', comissao_padrao=45,
-               horarios=%s WHERE id=1""", (Json(HORARIOS),))
+               horarios=%s, marca_endereco='Av. Afonso Pena, 1240 — Centro',
+               agendamento_online=true, agendamento_confirmar_manual=true,
+               agendamento_antecedencia_horas=2, agendamento_janela_dias=30 WHERE id=1""",
+            (Json(HORARIOS),))
+
+# ── Taxas da maquininha ───────────────────────────────────────────────
+# A demo precisa MOSTRAR o custo do cartão, não só ter o campo. Débito e crédito com taxas de
+# mercado; dinheiro e Pix em zero. (O TRUNCATE não pega formas_pagamento — ela é cadastro,
+# igual à configuracoes.)
+for nome_f, taxa, ordem in [('Dinheiro', 0, 0), ('Pix', 0, 1), ('Débito', 1.49, 2), ('Crédito', 3.19, 3)]:
+    cur.execute("""INSERT INTO formas_pagamento (nome, taxa_pct, ordem, ativo) VALUES (%s,%s,%s,true)
+                   ON CONFLICT (nome) DO UPDATE SET taxa_pct=EXCLUDED.taxa_pct,
+                     ordem=EXCLUDED.ordem, ativo=true""", (nome_f, taxa, ordem))
+cur.execute("UPDATE formas_pagamento SET ativo=false WHERE nome='Cartão'")
+print("[OK] formas de pagamento com taxa (Débito 1,49% · Crédito 3,19%)")
 
 # ── Clientes ──────────────────────────────────────────────────────────
 NOMES = [
@@ -200,7 +214,9 @@ PESO_SERVICO = (['Cabelo'] * 45 + ['Cabelo + Barba'] * 25 + ['Barba'] * 15 +
                 ['Infantil'] * 7 + ['Acabamento'] * 5 + ['Sobrancelha'] * 3)
 PESO_PROF = ([prof_id['José Carlos Ferreira']] * 40 + [prof_id['Rafael Moura']] * 35 +
              [prof_id['Diego Nunes']] * 25)
-PESO_PAGTO = ['Pix'] * 45 + ['Cartão'] * 35 + ['Dinheiro'] * 20
+# Débito e crédito separados: é o que faz a tela de Taxas ter o que mostrar (o crédito custa
+# mais que o dobro do débito, e a demo precisa deixar isso visível).
+PESO_PAGTO = ['Pix'] * 42 + ['Crédito'] * 22 + ['Débito'] * 16 + ['Dinheiro'] * 20
 # Movimento por dia da semana: segunda é fraca, sexta e sábado lotam. Demo com fluxo chapado
 # não parece barbearia de verdade.
 POR_DIA = {0: 0, 1: (8, 12), 2: (12, 17), 3: (12, 17), 4: (14, 19), 5: (20, 27), 6: (24, 32)}
@@ -450,6 +466,50 @@ for nome, pct, _, recebe in EQUIPE:
                 (pid, de, ate, total, total, mid, ate + timedelta(days=1)))
     fechadas += 1
 print(f"[OK] {fechadas} comissões fechadas na quinzena {de.strftime('%d/%m')}–{ate.strftime('%d/%m')}")
+
+# ── Taxas da maquininha sobre todo o histórico ────────────────────────
+# O seed grava movimento direto no banco (não passa pelo registrar_taxa do server), então a taxa
+# do histórico é lançada aqui de uma vez — mesma regra: despesa amarrada ao ref_id da receita.
+cur.execute("""
+    INSERT INTO movimentos (tipo, origem, ref_id, descricao, categoria, valor, forma_pagamento, data, status)
+    SELECT 'despesa', 'taxa', m.id, 'Taxa ' || m.forma_pagamento, 'Taxas de cartão',
+           ROUND(m.valor * f.taxa_pct / 100, 2), m.forma_pagamento, m.data, 'pago'
+      FROM movimentos m JOIN formas_pagamento f ON f.nome = m.forma_pagamento
+     WHERE m.tipo='receita' AND m.status='pago' AND f.taxa_pct > 0
+       AND ROUND(m.valor * f.taxa_pct / 100, 2) > 0
+""")
+taxas_lancadas = cur.rowcount
+custo_taxa = um("SELECT COALESCE(SUM(valor),0) FROM movimentos WHERE origem='taxa'")
+print(f"[OK] {taxas_lancadas} taxas de cartão lançadas (R$ {float(custo_taxa):,.2f} no período)")
+
+# ── Agendamento online: a fila que o prospect precisa ver funcionando ──
+# Sem pedido pendente e sem mensagem na fila, as duas telas novas parecem mortas na demo.
+ONLINE = [
+    # (dias à frente, hora, status, confirmacao_ja_enviada)
+    (1, 10, 'pendente', False),    # chegou pelo link, esperando o Zé aceitar
+    (2, 15, 'pendente', False),
+    (1,  9, 'agendado', False),    # já aceito, falta avisar o cliente → cai na fila de aceite
+    (3, 11, 'agendado', True),     # aceito e já avisado (mostra o estado "resolvido")
+]
+online_criados = 0
+for delta, hora, status, avisado in ONLINE:
+    d = hoje + timedelta(days=delta)
+    livres = slots_do_dia(d)
+    if not livres:
+        continue
+    pid = random.choice([prof_id[n] for n, _, _, r in EQUIPE if r])
+    servico = random.choice(PESO_SERVICO)
+    ag = um("""INSERT INTO agendamentos (profissional_id, cliente_id, servico_id, data, hora_inicio,
+                   duracao_slots, status, origem, servicos_ids, confirmacao_enviada_em)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,'online',%s,%s) RETURNING id""",
+            (pid, random.choice(cliente_ids), serv_id[servico], d, f"{hora:02d}:00",
+             2 if serv_dur[servico] > 30 else 1, status, Json([serv_id[servico]]),
+             datetime.now() if avisado else None))
+    online_criados += 1
+# Um agendado de amanhã sem lembrete enviado → alimenta a fila de lembrete D-1
+cur.execute("""UPDATE agendamentos SET lembrete_enviado_em=NULL
+               WHERE data = %s AND status='agendado'""", (hoje + timedelta(days=1),))
+print(f"[OK] {online_criados} agendamentos vindos do link online (2 esperando aceite)")
 
 conn.commit()
 cur.close()

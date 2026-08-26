@@ -57,6 +57,7 @@ const NAV_MAIS = [
   { href: '/uso', ic: '📊', label: 'Uso dos Planos' },
   { href: '/despesas', ic: '💸', label: 'Despesas' },
   { href: '/relatorios', ic: '✂️', label: 'Comissões' },
+  { href: '/taxas', ic: '💳', label: 'Taxas de cartão' },
   { href: '/dre', ic: '📈', label: 'Resultado' },
   { href: '/config', ic: '⚙️', label: 'Configurações', role: 'dono' },
 ];

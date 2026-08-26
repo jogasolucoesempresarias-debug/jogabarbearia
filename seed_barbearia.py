@@ -95,8 +95,12 @@ if vazia('planos'):
         ('Plano Cabelo + Barba', 150.00, ['Cabelo', 'Barba']),
     ]
     for nome, valor, servicos in planos:
+        # regra 'bolo': é o que a instância da Regiane usa em produção (a migração
+        # planos_regra_tabela_para_bolo converteu os planos dela) e o que o motor sempre aplicou.
+        # O 'tabela' aqui era resto do DEFAULT antigo, de quando a coluna nem era lida — deixava
+        # instância nova com comissão de assinante diferente da produção.
         cur.execute("""INSERT INTO planos (nome, valor_mensal, limite_uso, dias_inclusos, comissao_assinante_regra)
-                       VALUES (%s,%s,NULL,%s,'tabela') RETURNING id""", (nome, valor, DIAS))
+                       VALUES (%s,%s,NULL,%s,'bolo') RETURNING id""", (nome, valor, DIAS))
         pid = cur.fetchone()[0]
         for sn in servicos:
             sid = serv_id(sn)

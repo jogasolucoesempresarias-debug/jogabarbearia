@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Agendar horário</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2338bdf8'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-size='18' font-weight='700' text-anchor='middle' fill='%230a0e17'%3EB%3C/text%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Página pública e autossuficiente: não carrega o app.css nem o app.js (não há sessão aqui). */
+  :root { --bg:#0a0e17;--surface:#111827;--surface2:#1a2235;--border:#1e293b;--text:#e2e8f0;
+          --text-dim:#94a3b8;--accent:#38bdf8;--accent2:#818cf8;--red:#f87171;--green:#34d399;--yellow:#fbbf24; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:18px 14px 40px; }
+  .wrap { max-width:520px; margin:0 auto; }
+  header { text-align:center; margin-bottom:20px; }
+  .logo { width:54px; height:54px; border-radius:14px; background:linear-gradient(135deg,var(--accent),var(--accent2));
+          display:flex; align-items:center; justify-content:center; font-size:1.6rem; font-weight:700; color:var(--bg); margin:0 auto 12px; }
+  h1 { font-size:1.35rem; font-weight:700; }
+  .sub { color:var(--text-dim); font-size:0.85rem; margin-top:3px; }
+  .tabs { display:flex; gap:6px; background:var(--surface2); padding:4px; border-radius:12px; margin-bottom:16px; }
+  .tabs button { flex:1; padding:11px; background:none; border:none; color:var(--text-dim); font-weight:700;
+                 font-size:0.86rem; border-radius:9px; cursor:pointer; font-family:inherit; }
+  .tabs button.on { background:var(--surface); color:var(--accent); }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:15px 16px; margin-bottom:12px; }
+  .passo { font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-dim); font-weight:700; margin-bottom:9px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { padding:11px 14px; border-radius:12px; border:1px solid var(--border); background:var(--surface2);
+          color:var(--text); font-size:0.86rem; font-weight:600; cursor:pointer; font-family:inherit; }
+  .chip.on { border-color:var(--accent); color:var(--accent); background:rgba(56,189,248,0.08); }
+  .chip .p { color:var(--text-dim); font-size:0.74rem; margin-left:5px; font-weight:500; }
+  .chip.on .p { color:var(--accent); }
+  .horas { display:grid; grid-template-columns:repeat(auto-fill,minmax(78px,1fr)); gap:8px; }
+  .hora { padding:12px 4px; border-radius:11px; border:1px solid var(--border); background:var(--surface2);
+          color:var(--text); font-size:0.92rem; font-weight:700; cursor:pointer; font-family:'JetBrains Mono',monospace; }
+  .hora.on { border-color:var(--accent); color:var(--accent); background:rgba(56,189,248,0.1); }
+  label.f { display:block; font-size:0.72rem; color:var(--text-dim); margin-bottom:6px;
+            text-transform:uppercase; letter-spacing:0.04em; font-weight:600; }
+  input, select { width:100%; padding:13px 14px; background:var(--surface2); border:1px solid var(--border);
+                  border-radius:10px; color:var(--text); font-family:inherit; font-size:16px; margin-bottom:12px; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  .hp { position:absolute; left:-9999px; width:1px; height:1px; opacity:0; }
+  .btn { width:100%; padding:15px; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:var(--bg);
+         font-weight:700; border:none; border-radius:11px; cursor:pointer; font-size:0.98rem; font-family:inherit; }
+  .btn:disabled { opacity:0.45; }
+  .btn-ghost { background:transparent; border:1px solid var(--border); color:var(--text); }
+  .btn-danger { background:transparent; border:1px solid rgba(248,113,113,0.4); color:var(--red); padding:10px; font-size:0.85rem; }
+  .msg { padding:11px 13px; border-radius:10px; font-size:0.84rem; margin-bottom:12px; display:none; }
+  .msg.on { display:block; }
+  .msg.err { background:rgba(248,113,113,0.1); border:1px solid rgba(248,113,113,0.3); color:var(--red); }
+  .msg.ok { background:rgba(52,211,153,0.1); border:1px solid rgba(52,211,153,0.3); color:var(--green); }
+  .muted { color:var(--text-dim); font-size:0.82rem; }
+  .item { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--border); }
+  .item:last-child { border-bottom:none; }
+  .badge { display:inline-block; padding:3px 9px; border-radius:20px; font-size:0.68rem; font-weight:700; }
+  .badge.pend { background:rgba(251,191,36,0.16); color:var(--yellow); }
+  .badge.ok { background:rgba(52,211,153,0.14); color:var(--green); }
+  .fim { text-align:center; padding:12px 0; }
+  .fim .ic { font-size:3rem; margin-bottom:10px; }
+  .fim h2 { font-size:1.2rem; margin-bottom:8px; }
+  .foot { text-align:center; margin-top:22px; color:var(--text-dim); font-size:0.68rem;
+          font-family:'JetBrains Mono',monospace; letter-spacing:0.05em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo" id="ini">B</div>
+    <h1 id="marca">Barbearia</h1>
+    <div class="sub" id="marca-sub">Agende seu horário</div>
+  </header>
+
+  <div class="tabs">
+    <button id="tb-novo" class="on" onclick="aba('novo')">Agendar</button>
+    <button id="tb-meus" onclick="aba('meus')">Meus horários</button>
+  </div>
+
+  <div id="erro" class="msg err"></div>
+
+  <!-- ─────────── Agendar ─────────── -->
+  <div id="pane-novo">
+    <div class="card">
+      <div class="passo">1 · O que você quer fazer</div>
+      <div class="chips" id="servicos"></div>
+      <div class="muted" id="resumo-serv" style="margin-top:10px">Escolha um ou mais serviços.</div>
+    </div>
+
+    <div class="card">
+      <div class="passo">2 · Com quem</div>
+      <div class="chips" id="profs"></div>
+    </div>
+
+    <div class="card">
+      <div class="passo">3 · Que dia</div>
+      <input type="date" id="data" onchange="buscarHorarios()">
+      <div class="passo" style="margin-top:6px">4 · Que horas</div>
+      <div id="horarios"><div class="muted">Escolha o serviço e o dia primeiro.</div></div>
+    </div>
+
+    <div class="card">
+      <div class="passo">5 · Seus dados</div>
+      <label class="f">Nome</label>
+      <input type="text" id="nome" autocomplete="name" style="text-transform:uppercase" placeholder="Como te chamam">
+      <label class="f">WhatsApp</label>
+      <input type="tel" id="telefone" inputmode="numeric" autocomplete="tel" placeholder="(34) 99943-4613">
+      <input type="text" id="empresa" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <button class="btn" id="b-agendar" onclick="agendar()" disabled>Confirmar horário</button>
+    </div>
+  </div>
+
+  <!-- ─────────── Confirmado ─────────── -->
+  <div id="pane-fim" style="display:none">
+    <div class="card fim">
+      <div class="ic" id="fim-ic">✅</div>
+      <h2 id="fim-tit">Horário solicitado!</h2>
+      <p class="muted" id="fim-txt"></p>
+      <button class="btn btn-ghost" style="margin-top:16px" onclick="location.reload()">Voltar</button>
+    </div>
+  </div>
+
+  <!-- ─────────── Meus horários ─────────── -->
+  <div id="pane-meus" style="display:none">
+    <div class="card">
+      <div class="passo">Entre com seus dados</div>
+      <div class="muted" style="margin-bottom:12px">Use o mesmo nome e telefone do agendamento.</div>
+      <label class="f">Nome</label>
+      <input type="text" id="m-nome" style="text-transform:uppercase" autocomplete="name">
+      <label class="f">WhatsApp</label>
+      <input type="tel" id="m-telefone" inputmode="numeric" autocomplete="tel" placeholder="(34) 99943-4613">
+      <button class="btn" onclick="verMeus()">Ver meus horários</button>
+    </div>
+    <div id="lista-meus"></div>
+  </div>
+
+  <div class="foot">JOGA · SOLUÇÕES EMPRESARIAIS</div>
+</div>
+
+<script>
+// Máscara e helpers — cópia enxuta do app.js (esta página é pública e não o carrega)
+function maskTelefone(v) {
+  const d = String(v || '').replace(/\D/g, '').slice(0, 11), len = d.length;
+  if (len === 0) return '';
+  if (len < 3) return '(' + d;
+  const ddd = d.slice(0, 2), resto = d.slice(2);
+  if (len <= 6) return `(${ddd}) ${resto}`;
+  if (len <= 10) return `(${ddd}) ${resto.slice(0, 4)}-${resto.slice(4)}`;
+  return `(${ddd}) ${resto.slice(0, 5)}-${resto.slice(5)}`;
+}
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = v => new Intl.NumberFormat('pt-BR', { style:'currency', currency:'BRL' }).format(Number(v||0));
+const DIAS = ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'];
+function fmtDia(iso) { const d = new Date(iso + 'T00:00:00'); return `${DIAS[d.getDay()]}, ${d.toLocaleDateString('pt-BR')}`; }
+
+async function post(url, body) {
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({ ok:false, error:'Resposta inválida' }));
+  if (!j.ok) throw new Error(j.error || 'Não deu certo. Tente de novo.');
+  return j;
+}
+function erro(msg) {
+  const e = document.getElementById('erro');
+  if (!msg) return e.classList.remove('on');
+  e.textContent = msg; e.classList.add('on');
+  window.scrollTo({ top:0, behavior:'smooth' });
+}
+
+let CTX = null, SERV = [], PROF = null, HORA = null, PROF_DO_SLOT = null;
+
+function aba(qual) {
+  erro('');
+  document.getElementById('tb-novo').classList.toggle('on', qual === 'novo');
+  document.getElementById('tb-meus').classList.toggle('on', qual === 'meus');
+  document.getElementById('pane-novo').style.display = qual === 'novo' ? 'block' : 'none';
+  document.getElementById('pane-meus').style.display = qual === 'meus' ? 'block' : 'none';
+  document.getElementById('pane-fim').style.display = 'none';
+}
+
+async function carregar() {
+  try {
+    const r = await fetch('/api/agendar/contexto');
+    CTX = await r.json();
+    if (!CTX.ok) throw new Error('Agendamento indisponível');
+  } catch { document.body.innerHTML = '<div class="wrap"><div class="card fim"><div class="ic">🔒</div><h2>Agendamento online indisponível</h2><p class="muted">Fale com a barbearia pelo WhatsApp.</p></div></div>'; return; }
+
+  document.getElementById('marca').textContent = CTX.marca_nome;
+  document.getElementById('ini').textContent = (CTX.marca_nome || 'B').trim().charAt(0).toUpperCase();
+  document.title = CTX.marca_nome + ' — Agendar';
+  if (CTX.endereco) document.getElementById('marca-sub').textContent = CTX.endereco;
+
+  document.getElementById('servicos').innerHTML = CTX.servicos.map(s =>
+    `<button class="chip" id="s-${s.id}" onclick="toggleServ(${s.id})">${esc(s.nome)}<span class="p">${money(s.preco)}</span></button>`).join('');
+  document.getElementById('profs').innerHTML =
+    `<button class="chip on" id="p-0" onclick="escolherProf(0)">Tanto faz</button>` +
+    CTX.profissionais.map(p => `<button class="chip" id="p-${p.id}" onclick="escolherProf(${p.id})">${esc(p.nome)}</button>`).join('');
+  PROF = 0;
+
+  const dt = document.getElementById('data');
+  dt.min = CTX.primeiro_dia; dt.max = CTX.ultimo_dia; dt.value = CTX.primeiro_dia;
+  buscarHorarios();
+}
+
+function toggleServ(id) {
+  const i = SERV.indexOf(id);
+  if (i < 0) SERV.push(id); else SERV.splice(i, 1);
+  document.getElementById('s-' + id).classList.toggle('on', SERV.includes(id));
+  const sel = CTX.servicos.filter(s => SERV.includes(s.id));
+  const dur = sel.reduce((a, s) => a + (s.duracao_min || 30), 0);
+  const val = sel.reduce((a, s) => a + Number(s.preco), 0);
+  document.getElementById('resumo-serv').textContent = sel.length
+    ? `${sel.map(s => s.nome).join(' + ')} · ~${dur}min · ${money(val)}` : 'Escolha um ou mais serviços.';
+  HORA = null; buscarHorarios();
+}
+
+function escolherProf(id) {
+  PROF = id;
+  document.querySelectorAll('[id^="p-"]').forEach(b => b.classList.remove('on'));
+  document.getElementById('p-' + id).classList.add('on');
+  HORA = null; buscarHorarios();
+}
+
+async function buscarHorarios() {
+  const box = document.getElementById('horarios');
+  const data = document.getElementById('data').value;
+  validar();
+  if (!SERV.length || !data) { box.innerHTML = '<div class="muted">Escolha o serviço e o dia primeiro.</div>'; return; }
+  box.innerHTML = '<div class="muted">Procurando horários…</div>';
+  try {
+    const qs = new URLSearchParams({ data, servicos_ids: SERV.join(',') });
+    if (PROF) qs.set('profissional_id', PROF);
+    const r = await fetch('/api/agendar/disponibilidade?' + qs);
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'Erro');
+    if (j.fechado) { box.innerHTML = '<div class="muted">Fechado nesse dia. Escolha outro. 🔒</div>'; return; }
+    if (!j.slots.length) { box.innerHTML = '<div class="muted">Nenhum horário livre nesse dia. Tente outro. 📅</div>'; return; }
+    box.innerHTML = '<div class="horas">' + j.slots.map(s =>
+      `<button class="hora" id="h-${s.hora.replace(':','')}" onclick="escolherHora('${s.hora}',${s.profissionais[0]})">${s.hora}</button>`).join('') + '</div>';
+  } catch (e) { box.innerHTML = '<div class="muted">Não deu pra carregar os horários.</div>'; }
+}
+
+function escolherHora(h, profId) {
+  HORA = h; PROF_DO_SLOT = profId;
+  document.querySelectorAll('.hora').forEach(b => b.classList.remove('on'));
+  const el = document.getElementById('h-' + h.replace(':', ''));
+  if (el) el.classList.add('on');
+  validar();
+}
+
+function validar() {
+  const ok = SERV.length && HORA && document.getElementById('nome').value.trim()
+             && document.getElementById('telefone').value.replace(/\D/g, '').length >= 10;
+  document.getElementById('b-agendar').disabled = !ok;
+}
+
+async function agendar() {
+  const b = document.getElementById('b-agendar');
+  b.disabled = true; b.textContent = 'Confirmando…'; erro('');
+  try {
+    const j = await post('/api/agendar', {
+      nome: document.getElementById('nome').value,
+      telefone: document.getElementById('telefone').value,
+      empresa: document.getElementById('empresa').value,
+      servicos_ids: SERV,
+      // "Tanto faz" manda o barbeiro que o servidor apontou como livre naquele slot
+      profissional_id: PROF || PROF_DO_SLOT,
+      data: document.getElementById('data').value,
+      hora_inicio: HORA,
+    });
+    const data = document.getElementById('data').value;
+    document.getElementById('pane-novo').style.display = 'none';
+    document.getElementById('pane-fim').style.display = 'block';
+    if (j.status === 'pendente') {
+      document.getElementById('fim-ic').textContent = '⏳';
+      document.getElementById('fim-tit').textContent = 'Pedido enviado!';
+      document.getElementById('fim-txt').textContent =
+        `${fmtDia(data)} às ${HORA}. A barbearia vai confirmar e te avisar no WhatsApp.`;
+    } else {
+      document.getElementById('fim-ic').textContent = '✅';
+      document.getElementById('fim-tit').textContent = 'Horário confirmado!';
+      document.getElementById('fim-txt').textContent =
+        `${fmtDia(data)} às ${HORA}. Te esperamos! 💈`;
+    }
+    window.scrollTo({ top:0, behavior:'smooth' });
+  } catch (e) {
+    erro(e.message); buscarHorarios();
+  } finally { b.disabled = false; b.textContent = 'Confirmar horário'; }
+}
+
+// ── Meus horários (o "login" do cliente: nome + telefone) ──
+let MEUS = { nome:'', telefone:'' };
+async function verMeus() {
+  erro('');
+  MEUS = { nome: document.getElementById('m-nome').value, telefone: document.getElementById('m-telefone').value };
+  const box = document.getElementById('lista-meus');
+  box.innerHTML = '<div class="card"><div class="muted">Procurando…</div></div>';
+  try {
+    const j = await post('/api/agendar/meus', MEUS);
+    box.innerHTML = j.rows.length
+      ? '<div class="card">' + j.rows.map(a => `
+          <div class="item">
+            <div>
+              <div style="font-weight:600">${fmtDia(a.data)} às ${String(a.hora_inicio).slice(0,5)}</div>
+              <div class="muted">${esc((a.servicos||[]).join(', '))}${a.barbeiro ? ' · ' + esc(a.barbeiro) : ''}</div>
+              <div style="margin-top:5px">${a.status === 'pendente'
+                ? '<span class="badge pend">aguardando confirmação</span>'
+                : '<span class="badge ok">confirmado</span>'}</div>
+            </div>
+            <button class="btn btn-danger" style="width:auto" onclick="cancelar(${a.id})">Cancelar</button>
+          </div>`).join('') + '</div>'
+      : '<div class="card"><div class="muted">Você não tem horário marcado. 📅</div></div>';
+  } catch (e) { box.innerHTML = ''; erro(e.message); }
+}
+
+async function cancelar(id) {
+  if (!confirm('Cancelar este horário?')) return;
+  try { await post('/api/agendar/cancelar', { ...MEUS, agendamento_id: id }); verMeus(); }
+  catch (e) { erro(e.message); }
+}
+
+['nome','telefone','m-nome','m-telefone'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('input', () => {
+    if (id.includes('tel')) el.value = maskTelefone(el.value);
+    else el.value = el.value.toUpperCase();
+    validar();
+  });
+});
+carregar();
+</script>
+</body>
+</html>

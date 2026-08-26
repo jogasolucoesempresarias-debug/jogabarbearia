@@ -1,6 +1,6 @@
 """Bateria completa de testes da operação (via API, como um usuário real).
 Roda num banco recém-semeado. Deixa dados de exemplo populados pra inspeção."""
-import os, json, urllib.request, urllib.error, http.cookiejar
+import os, json, calendar, urllib.request, urllib.error, http.cookiejar
 from datetime import date
 import psycopg2
 from dotenv import load_dotenv
@@ -18,7 +18,7 @@ OK = 0; FAIL = 0
 def check(label, cond, extra=''):
     global OK, FAIL
     print(f"  [{'PASS' if cond else 'FALHA'}] {label}" + (f"  → {extra}" if extra else ''))
-    OK += cond; FAIL += (not cond)
+    OK += bool(cond); FAIL += (not cond)
 
 def call(m, p, b=None):
     data = json.dumps(b).encode() if b is not None else None
@@ -87,9 +87,14 @@ cli2 = call('POST', '/api/clientes', {'nome': 'CLIENTE ASSINANTE', 'telefone': '
 planos = {p['nome']: p for p in call('GET', '/api/planos')['rows']}
 plano_cabelo = planos['Plano Cabelo']
 call('POST', '/api/assinaturas', {'cliente_id': cli2['id'], 'plano_id': plano_cabelo['id'], 'dia_vencimento': 10})
-gc = call('POST', '/api/assinaturas/gerar-cobrancas', {'competencia': f'{hoje.year}-{hoje.month:02d}'})
+# A 1ª mensalidade já caiu no caixa na criação; a PRÓXIMA vence no mês seguinte (regra desde
+# a2f2877). Gerar para a competência atual devolve 0 de propósito — quem cobre isso é o
+# _smoke_assinatura.py. Aqui a gente pede o mês seguinte, que é onde a cobrança existe.
+prox_ano, prox_mes = (hoje.year + 1, 1) if hoje.month == 12 else (hoje.year, hoje.month + 1)
+fim_prox = date(prox_ano, prox_mes, calendar.monthrange(prox_ano, prox_mes)[1])
+gc = call('POST', '/api/assinaturas/gerar-cobrancas', {'competencia': f'{prox_ano}-{prox_mes:02d}'})
 check('cobrança gerada', gc.get('gerados', 0) >= 1, f"gerados={gc.get('gerados')}")
-movs = call('GET', f'/api/movimentos?de={mes_ini}&ate={hoje.isoformat()}')['rows']
+movs = call('GET', f'/api/movimentos?de={mes_ini}&ate={fim_prox.isoformat()}')['rows']
 cob = next((m for m in movs if m['origem'] == 'assinatura' and m['status'] == 'previsto'), None)
 check('cobrança no caixa como PREVISTO (R$100)', cob and abs(float(cob['valor']) - 100) < 0.01, cob and cob['valor'])
 if cob:
@@ -122,8 +127,10 @@ print(f"     caixa: receita={fx['total_receita']} despesa={fx['total_despesa']} 
 
 print("== 10. Relatório de comissão (quinzena) ==")
 rc = call('GET', f'/api/relatorios/comissao?de={mes_ini}&ate={hoje.isoformat()}')
-check('arrecadação = 100 (1 mensalidade recebida)', abs(rc['plan_revenue'] - 100) < 0.01, rc['plan_revenue'])
-check('bolo = 45 (45% de 100)', abs(rc['pool'] - 45) < 0.01, rc['pool'])
+# Duas mensalidades caem no período: a 1ª cobrada na criação da assinatura (regra a2f2877) e a
+# do mês seguinte, que o passo 7 recebeu — o mov_pagar carimba data=hoje.
+check('arrecadação = 200 (1ª mensalidade + a recebida)', abs(rc['plan_revenue'] - 200) < 0.01, rc['plan_revenue'])
+check('bolo = 90 (45% de 200)', abs(rc['pool'] - 90) < 0.01, rc['pool'])
 print(f"     rows: {[(r['profissional'], 'avulso='+str(r['avulso']), 'bolo='+str(r['pool_share']), 'visitas='+str(r['atend']), 'total='+str(r['total'])) for r in rc['rows']]}")
 
 print("== 11. Visão do barbeiro (João Victor) ==")

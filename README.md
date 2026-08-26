@@ -85,7 +85,22 @@ criar usuário na barbearia do cliente.
   "a receber" (idempotente, via `proxima_cobranca`).
 - **Despesas e Impostos**: lançamento com **categoria** (incl. Impostos), resumo por categoria, e
   **despesas fixas recorrentes** (aluguel/imposto/internet) com "Gerar despesas do mês".
-- **Caixa**: fechamento do dia por forma de pagamento (Dinheiro/Pix/Cartão) + a receber/lançamentos.
+- **Caixa**: fechamento do dia por forma de pagamento + a receber/lançamentos, com **bruto ×
+  taxas × líquido** quando houve cartão no dia.
+- **Taxas de maquininha**: cada forma de pagamento tem seu **% próprio** (tabela
+  `formas_pagamento`, editável em *Configurações › Pagamentos*). A cada recebimento o sistema
+  lança a taxa como **despesa** na categoria "Taxas de cartão", amarrada ao movimento de receita
+  (`origem='taxa'`, `ref_id` = id da receita) — some junto quando a receita é desfeita.
+  - **A receita continua BRUTA de propósito.** A taxa é custo, não desconto no faturamento. Se
+    fosse abatida da receita, a **comissão do barbeiro** (que sai de `comanda_itens.subtotal`)
+    mudaria conforme a forma de pagamento escolhida pelo *cliente* — ninguém decidiu isso.
+  - Nasce da tabela em **quatro** pontos (motor único `registrar_taxa`): fechar comanda, criar
+    assinatura, receita manual e **`mov_pagar`** (onde a mensalidade prevista vira paga e ganha
+    forma — o mais fácil de esquecer). Lançada na **data da venda**, não no D+30 do recebimento.
+  - Tela `/taxas`: bruto, taxa e líquido do período por modalidade, com o **% efetivo calculado
+    do realizado** (se a taxa mudou no meio do período, vale o que foi lançado na época).
+  - `configuracoes.formas_pagamento` (JSONB) virou **vestigial**: a tabela é a fonte da verdade.
+    O `/api/config` segue devolvendo a lista de **nomes** porque seis telas consomem esse formato.
 - **DRE/Resultado**: receitas (serviços, produtos, assinaturas) − despesas (por categoria, incl.
   comissões pagas) = resultado. Período flexível (mês/trimestre/ano/intervalo), **evolução de 6
   meses** em gráfico, **drill-down** por serviço/produto (qtd + valor), ticket médio, nº de
@@ -97,7 +112,43 @@ criar usuário na barbearia do cliente.
   (intenso/regular/dormente/nunca), distribuição por barbeiro; agregados de margem dos planos e
   assinantes em risco de churn.
 - **Agenda**: slots de 30min, multi-serviço (soma a duração), walk-in, bloqueio/folga, cancelamento
-  sem taxa, horário por dia.
+  sem taxa, horário por dia. O backend valida **sobreposição de intervalo** (não só o mesmo minuto
+  de início), bloqueio e horário de funcionamento — motor único `slot_livre`, usado também pela
+  porta pública.
+- **Agendamento online** (`/agendar`, público, opt-in em *Configurações › Agendamento*): o cliente
+  marca sozinho pelo link — **sem app, sem conta**, nome e telefone bastam. Escolhe serviço(s) →
+  barbeiro (ou "tanto faz") → dia → horário. Depois volta na mesma página, entra com **nome +
+  telefone** e vê/cancela os próprios horários.
+  - **Nasce desligado** (`agendamento_online=false`): instância existente não ganha porta pública
+    sem alguém decidir. `/agendar` responde 404 enquanto estiver desligado.
+  - **Confirmar manual** (padrão): o pedido entra como `status='pendente'` e a barbearia aceita na
+    Agenda (slot tracejado, ⏳). Desligado, cai direto como `agendado`.
+  - A **disponibilidade responde só livre/ocupado** — nunca nome de cliente. O `/api/agenda`
+    (que devolve nome de todo mundo do dia) é interno e **não pode ser reaproveitado ali**.
+  - Travas: rate limit por IP (**a cota só é gasta quando o agendamento nasce** — cobrar tentativa
+    com erro trancaria quem só errou o próprio telefone), honeypot, **1 horário futuro em aberto
+    por telefone**, antecedência mínima e janela máxima configuráveis, `aceita_online` por barbeiro.
+  - Cliente novo entra com `origem='online'` e `status='aprovado'` — o agendamento em si é o portão.
+- **Mensagens de WhatsApp — envio MANUAL**: nada é disparado. O sistema **monta o texto e devolve
+  um link `wa.me`**; a barbearia toca, o WhatsApp **dela** abre com a mensagem pronta e ela envia.
+  Duas filas, num cartão no topo da Agenda:
+  - **aceite** — ela aprovou um pedido online e o cliente está esperando resposta;
+  - **lembrete D-1** — véspera do atendimento, para todo mundo (online ou do balcão).
+  - Por que manual e por `wa.me`: a mensagem sai do **número real da barbearia** (o cliente
+    reconhece e responde ali), não existe instância de WhatsApp por cliente pra conectar e pagar,
+    e não há risco de bloqueio por disparo em massa.
+  - **A fila é uma consulta** (`confirmacao_enviada_em` / `lembrete_enviado_em` nulas) — por isso
+    não há cron nem agendador no servidor.
+  - O sistema **não sabe** se ela apertou enviar (o `wa.me` não devolve nada): marca no clique e
+    oferece **desfazer**. Nunca exibimos "entregue".
+  - ⚠️ `normalizar_telefone_br` **remove o 9º dígito** (canônico da UazAPI) e **não serve aqui** —
+    o `wa.me` quer o número cheio. Helper próprio: `wa_numero`.
+  - ⚠️ **Sem emoji no texto da mensagem.** O link sai em UTF-8 correto, mas o Windows repassa a
+    URL ao WhatsApp Desktop convertendo para a codepage ANSI: acento sobrevive (existe em
+    Latin-1), emoji vira `?` **na tela do cliente da barbearia**. `_smoke_agendar.py` trava
+    qualquer caractere acima de `U+00FF` no texto — não é firula, é o que impede a regressão.
+  - O canal **UazAPI (`alerta_whatsapp`) não é usado nisso**: aquilo é o aviso interno da JOGA
+    quando um prospect envia a ficha.
 - **Cadastro de cliente**: telefone com máscara `(DD) 9XXXX-XXXX` e nome em MAIÚSCULO.
 - **Onboarding de uma barbearia nova** (entrega assistida — o cliente não encara wizard nenhum):
   1. `/setup` (login dono/master) → **gera o link da ficha** com token.
@@ -196,6 +247,12 @@ $env:DB_NAME="joga_demo_local"; $env:MODO_DEMO="1"; $env:PORT="5006"
   aplicar bloqueado (banco descartável próprio)
 - `_smoke_alerta.py` — alerta de WhatsApp: sobe uma **UazAPI de mentira** local e confere número
   normalizado, header do token, texto e os 2 destinatários — sem gastar mensagem nem usar internet
+- `_smoke_taxas.py` — taxa da maquininha: os **4 pontos onde ela nasce** e os **3 de desfazer**,
+  o líquido no caixa do dia, o relatório do período e a trava de que **a receita continua bruta**
+- `_smoke_agendar.py` — agendamento online ponta a ponta em **banco descartável próprio**: a trava
+  de sobreposição/bloqueio/horário, a porta pública (404 desligada), **disponibilidade sem vazar
+  nome de cliente**, agendar/cancelar, "meus horários" só devolvendo os da pessoa, as travas de
+  abuso, a fila de mensagens e o **`wa.me` mantendo o 9º dígito**
 - `_smoke_demo.py` — a trava do `seed_demo.py`, o reset sem duplicar, **a ficha de coleta
   sobrevivendo ao reset** e as telas que o prospect vê (~50s: roda o seed completo de propósito,
   porque "dormente" e o gráfico de 6 meses só existem na janela real de 180 dias)
@@ -225,6 +282,13 @@ sudo docker exec $(sudo docker ps -q -f name=barbearia_barbearia) python -X utf8
 > ⚠️ `docker ps -f name=barbearia` casa com **a produção da Regiane e a demo** ao mesmo tempo. Use
 > sempre o nome completo (`barbearia_barbearia`, `barbearia_demo`) e confira antes com
 > `docker ps --format "{{.Names}}" | grep barbearia`.
+
+> **Nesta leva o `init_db.py` é obrigatório depois do update.** Ele cria `formas_pagamento`
+> (semeando com o que a instância já usava, taxa 0 — ninguém perde nem ganha nada), altera os
+> CHECK de `movimentos.origem` e `agendamentos.origem/status`, e acrescenta as colunas do
+> agendamento online. Tudo aditivo. O **agendamento online nasce desligado**: ligue em
+> *Configurações › Agendamento* quando o cliente quiser, e preencha as taxas da maquininha dele
+> em *Configurações › Pagamentos* (entram como 0%, ou seja, sem efeito, até serem preenchidas).
 
 **Instância nova (cliente, hub ou demo)** — a ordem importa:
 ```bash
@@ -271,8 +335,8 @@ init_db.py           # schema (idempotente, migrações aditivas + _migracoes p/
 seed_barbearia.py    # dados pré-configurados (serviços, produtos, 2 barbeiros, horários, 3 planos)
 seed_demo.py         # popula E reseta a demo (datas relativas a hoje; exige MODO_DEMO)
 static/app.css|js    # shell mobile-first (bottom-nav, máscara telefone, helpers)
-agenda · comanda · clientes · assinaturas · uso(Uso dos Planos) · caixa · despesas · relatorios(Comissões) · dre · config · barbeiro .html
-login.html · trocar-senha.html · cadastro.html(QR público)
+agenda · comanda · clientes · assinaturas · uso(Uso dos Planos) · caixa · despesas · relatorios(Comissões) · taxas · dre · config · barbeiro .html
+login.html · trocar-senha.html · cadastro.html(QR público) · agendar.html(agendamento online público)
 coleta.html      # ficha pública da barbearia nova (autossuficiente, não usa app.js)
 setup.html       # painel da JOGA: link, importar/exportar, conferir e aplicar (lista de fichas no hub)
 manifest.json · sw.js  # PWA (service worker network-first)

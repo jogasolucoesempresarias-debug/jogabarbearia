@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>JOGA Barbearia — Taxas de cartão</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e17">
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .barra { height:6px; border-radius:4px; background:var(--surface2); overflow:hidden; margin-top:6px; }
+  .barra > i { display:block; height:100%; background:linear-gradient(90deg,var(--accent),var(--accent2)); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar"><div class="brandlogo"><div class="ic">B</div><div><h1>Taxas de cartão</h1><div class="sub">Quanto a maquininha custou</div></div></div></div>
+
+  <div class="card">
+    <div class="field"><label>Período</label>
+      <select id="preset" onchange="aplicarPreset()"></select></div>
+    <div class="filters">
+      <div class="field"><label>De</label><input type="date" id="de" onchange="carregar()"></div>
+      <div class="field"><label>Até</label><input type="date" id="ate" onchange="carregar()"></div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card kpi"><div class="label">Faturamento bruto</div><div class="value" id="k-bruto">—</div></div>
+    <div class="card kpi"><div class="label">Custo da maquininha</div><div class="value neg" id="k-taxa">—</div></div>
+  </div>
+  <div class="card kpi"><div class="label">Líquido no bolso</div><div class="value pos" id="k-liq">—</div>
+    <div class="ri-sub muted" id="k-media"></div></div>
+
+  <div class="section-title">Por forma de pagamento</div>
+  <div class="list" id="lista"><div class="empty">Carregando…</div></div>
+
+  <div class="card" style="margin-top:14px">
+    <div class="ri-sub" style="margin:0">A taxa entra como despesa na categoria <strong>“Taxas de cartão”</strong> e já
+    está no Resultado (DRE). A receita continua cheia — o que muda é o custo aparecer com nome.
+    O percentual é editável em <a href="/config" style="color:var(--accent)">Configurações › Pagamentos</a>.</div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+function presets() {
+  const hj = new Date(), y = hj.getFullYear(), m = hj.getMonth();
+  const iso = d => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(d);
+  const out = [];
+  for (let k = 0; k < 6; k++) {
+    const ini = new Date(y, m - k, 1), fim = new Date(y, m - k + 1, 0);
+    out.push({ label: `${DIAS_MES[ini.getMonth()]}/${String(ini.getFullYear()).slice(2)}`, de: iso(ini), ate: iso(fim) });
+  }
+  return out;
+}
+const DIAS_MES = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+
+function aplicarPreset() {
+  const [de, ate] = document.getElementById('preset').value.split('|');
+  document.getElementById('de').value = de;
+  document.getElementById('ate').value = ate;
+  carregar();
+}
+
+async function carregar() {
+  const de = document.getElementById('de').value, ate = document.getElementById('ate').value;
+  if (!de || !ate) return;
+  try {
+    const r = await api(`/api/relatorios/taxas?de=${de}&ate=${ate}`);
+    document.getElementById('k-bruto').textContent = money(r.total_bruto);
+    document.getElementById('k-taxa').textContent = '−' + money(r.total_taxa);
+    document.getElementById('k-liq').textContent = money(r.total_liquido);
+    document.getElementById('k-media').textContent = r.total_taxa > 0
+      ? `média de ${String(r.taxa_pct_media).replace('.', ',')}% sobre tudo que entrou`
+      : 'nenhuma taxa no período';
+
+    const max = Math.max(...r.rows.map(x => x.taxa), 0.01);
+    document.getElementById('lista').innerHTML = r.rows.length
+      ? r.rows.map(x => `
+        <div class="row-item">
+          <div style="flex:1">
+            <div class="ri-main">${escapeHtml(x.forma)}</div>
+            <div class="ri-sub">${money(x.bruto)} em ${x.qtd} recebimento(s)${x.taxa > 0 ? ` · ${String(x.taxa_pct_efetiva).replace('.', ',')}%` : ' · sem taxa'}</div>
+            ${x.taxa > 0 ? `<div class="barra"><i style="width:${Math.round(x.taxa / max * 100)}%"></i></div>` : ''}
+          </div>
+          <div class="ri-right" style="color:${x.taxa > 0 ? 'var(--red)' : 'var(--text-dim)'}">
+            ${x.taxa > 0 ? '−' + money(x.taxa) : '—'}
+            <div class="ri-sub" style="text-align:right">líq. ${money(x.liquido)}</div>
+          </div>
+        </div>`).join('')
+      : '<div class="empty">Nenhum recebimento no período.</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+const ps = presets();
+document.getElementById('preset').innerHTML = ps.map(p => `<option value="${p.de}|${p.ate}">${p.label}</option>`).join('');
+aplicarPreset();
+renderShell('/mais');
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>
