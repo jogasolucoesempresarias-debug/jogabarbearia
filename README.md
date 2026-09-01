@@ -115,12 +115,12 @@ criar usuário na barbearia do cliente.
   sem taxa, horário por dia. O backend valida **sobreposição de intervalo** (não só o mesmo minuto
   de início), bloqueio e horário de funcionamento — motor único `slot_livre`, usado também pela
   porta pública.
-- **Agendamento online** (`/agendar`, público, opt-in em *Configurações › Agendamento*): o cliente
+- **Agendamento online** (`/agendamento`, público, opt-in em *Configurações › Agendamento*): o cliente
   marca sozinho pelo link — **sem app, sem conta**, nome e telefone bastam. Escolhe serviço(s) →
   barbeiro (ou "tanto faz") → dia → horário. Depois volta na mesma página, entra com **nome +
   telefone** e vê/cancela os próprios horários.
   - **Nasce desligado** (`agendamento_online=false`): instância existente não ganha porta pública
-    sem alguém decidir. `/agendar` responde 404 enquanto estiver desligado.
+    sem alguém decidir. `/agendamento` responde 404 enquanto estiver desligado.
   - **Confirmar manual** (padrão): o pedido entra como `status='pendente'` e a barbearia aceita na
     Agenda (slot tracejado, ⏳). Desligado, cai direto como `agendado`.
   - A **disponibilidade responde só livre/ocupado** — nunca nome de cliente. O `/api/agenda`
@@ -342,7 +342,7 @@ seed_barbearia.py    # dados pré-configurados (serviços, produtos, 2 barbeiros
 seed_demo.py         # popula E reseta a demo (datas relativas a hoje; exige MODO_DEMO)
 static/app.css|js    # shell mobile-first (bottom-nav, máscara telefone, helpers)
 agenda · comanda · clientes · assinaturas · uso(Uso dos Planos) · caixa · despesas · relatorios(Comissões) · taxas · dre · config · barbeiro .html
-login.html · trocar-senha.html · cadastro.html(QR público) · agendar.html(agendamento online público)
+login.html · trocar-senha.html · cadastro.html(QR público) · agendar.html(agendamento online público, servido em `/agendamento`)
 coleta.html      # ficha pública da barbearia nova (autossuficiente, não usa app.js)
 setup.html       # painel da JOGA: link, importar/exportar, conferir e aplicar (lista de fichas no hub)
 manifest.json · sw.js  # PWA (service worker network-first)

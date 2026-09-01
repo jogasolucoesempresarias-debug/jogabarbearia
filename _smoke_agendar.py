@@ -168,7 +168,7 @@ try:
     print("\n########## FASE 1 — a porta pública ##########")
     # ══════════════════════════════════════════════════════════════════
     print("== Desligado, a porta não existe ==")
-    check('/agendar responde 404', pub('GET', '/agendar').get('_status') == 404)
+    check('/agendamento responde 404', pub('GET', '/agendamento').get('_status') == 404)
     check('contexto 404', pub('GET', '/api/agendar/contexto').get('_status') == 404)
     check('disponibilidade 404', pub('GET', f'/api/agendar/disponibilidade?data={D1}').get('_status') == 404)
     check('POST agendar 404', pub('POST', '/api/agendar', {'nome': 'X'}).get('_status') == 404)
@@ -344,7 +344,7 @@ try:
     check('João entrou na fila de aceite', aceite is not None)
     check('texto traz o nome da barbearia', aceite and 'JOGA Barbearia' in aceite['texto'], aceite['texto'][:60] if aceite else '')
     check('texto traz o endereço', aceite and 'Rua das Tesouras' in aceite['texto'])
-    check('texto traz o link /agendar', aceite and '/agendar' in aceite['texto'])
+    check('texto traz o link /agendamento', aceite and '/agendamento' in aceite['texto'])
     check('texto traz a hora', aceite and '11:00' in aceite['texto'])
 
     print("== O link do WhatsApp mantém o 9º dígito ==")

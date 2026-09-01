@@ -115,7 +115,7 @@ async function render() {
   } else if (ATUAL==='agonline') {
     CFG = (await api('/api/config')).config;
     const profs = (await api('/api/profissionais')).rows;
-    const url = location.origin + '/agendar';
+    const url = location.origin + '/agendamento';
     const on = !!CFG.agendamento_online;
     p.innerHTML = `<div class="card">
         <div class="section-title" style="margin-top:0">Agendamento online</div>

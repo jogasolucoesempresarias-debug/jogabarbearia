@@ -530,7 +530,7 @@ def _servicos_validos(ids):
                  (ids,)) if ids else []
 
 
-@app.route('/agendar', methods=['GET'])
+@app.route('/agendamento', methods=['GET'])
 def agendar_page():
     if not agendamento_cfg()['ligado'] or MODO_COLETA:
         return jsonify({'ok': False, 'error': 'Agendamento online indisponível'}), 404
@@ -1745,7 +1745,7 @@ def _texto_mensagem(tipo, ag, marca, endereco, base_url):
     dia = f"{DIAS_SEMANA_PT[js_weekday(d)]}, {d.strftime('%d/%m')}" if d else ''
     hora = str(ag['hora_inicio'])[:5]
     servs = ', '.join(ag.get('servicos') or []) or 'atendimento'
-    link = f"{base_url}/agendar"
+    link = f"{base_url}/agendamento"
     # SEM EMOJI de propósito. O link wa.me sai em UTF-8 correto, mas quando o Windows repassa a
     # URL pro WhatsApp Desktop ele converte pra codepage ANSI: acento sobrevive (existe em
     # Latin-1), emoji não — chega como "?" no cliente da barbearia. Não dá pra controlar o
@@ -1789,7 +1789,7 @@ def mensagens_pendentes():
                 'tipo': tipo, 'agendamento_id': a['id'], 'cliente_nome': a['cliente_nome'],
                 'telefone': a.get('telefone'), 'data': a['data'], 'hora': str(a['hora_inicio'])[:5],
                 'barbeiro': a.get('barbeiro'), 'servicos': a['servicos'], 'texto': texto,
-                # safe='' força codificar a '/' também: o texto tem o link /agendar dentro e
+                # safe='' força codificar a '/' também: o texto tem o link /agendamento dentro e
                 # deixar barra crua no query string é pedir pra algum cliente truncar a mensagem.
                 'wa_url': (f"https://wa.me/{numero}?text={urllib.parse.quote(texto, safe='')}"
                            if numero else None),
